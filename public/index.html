@@ -78,12 +78,20 @@
               </svg>
               <span>Private Vault</span>
             </button>
+
+            <button class="nav-item" data-view="view-files" data-folder="TRASH">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/>
+              </svg>
+              <span>Trash</span>
+              <span class="nav-badge" id="trashCountPill">0</span>
+            </button>
           </nav>
         </div>
 
         <!-- Connectivity & Expansion -->
         <div class="nav-group">
-          <div class="nav-group-label">Connectivity</div>
+          <div class="nav-group-label">Connectivity & Trust</div>
           <nav class="nav-list" id="toolNavList">
             <button class="nav-item" data-view="view-mount">
               <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -104,6 +112,13 @@
                 <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
               </svg>
               <span>Mac Storage Doctor</span>
+            </button>
+
+            <button class="nav-item" data-view="view-security">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+              </svg>
+              <span>Security & Activity</span>
             </button>
 
             <button class="nav-item" data-view="view-upgrade">
@@ -208,8 +223,39 @@
           </div>
         </section>
 
+        <!-- Apple macOS / iOS Style Multi-Segment Storage Breakdown Bar -->
+        <section class="breakdown-strip" aria-label="Memory Card Storage Breakdown">
+          <div class="breakdown-bar" id="storageBreakdownBar">
+            <div class="bd-seg bd-media" id="bdSegMedia" style="width: 0%" title="Movies & Media"></div>
+            <div class="bd-seg bd-photos" id="bdSegPhotos" style="width: 0%" title="Photos"></div>
+            <div class="bd-seg bd-dev" id="bdSegDev" style="width: 0%" title="Developer & Code"></div>
+            <div class="bd-seg bd-docs" id="bdSegDocs" style="width: 0%" title="Documents"></div>
+            <div class="bd-seg bd-vault" id="bdSegVault" style="width: 0%" title="Private Vault"></div>
+            <div class="bd-seg bd-trash" id="bdSegTrash" style="width: 0%" title="Trash"></div>
+          </div>
+          <div class="breakdown-legend" id="storageBreakdownLegend">
+            <span class="bd-item"><i class="bd-dot bd-media"></i>Media <strong id="bdValMedia">0 B</strong></span>
+            <span class="bd-item"><i class="bd-dot bd-photos"></i>Photos <strong id="bdValPhotos">0 B</strong></span>
+            <span class="bd-item"><i class="bd-dot bd-dev"></i>Code <strong id="bdValDev">0 B</strong></span>
+            <span class="bd-item"><i class="bd-dot bd-docs"></i>Docs <strong id="bdValDocs">0 B</strong></span>
+            <span class="bd-item"><i class="bd-dot bd-vault"></i>Vault <strong id="bdValVault">0 B</strong></span>
+            <span class="bd-item"><i class="bd-dot bd-trash"></i>Trash <strong id="bdValTrash">0 B</strong></span>
+          </div>
+        </section>
+
+        <!-- Trash Management Banner (Shown only when Trash folder is open) -->
+        <section id="emptyTrashBanner" class="trash-banner hidden">
+          <div>
+            <strong>Safety Trash Bin</strong>
+            <span>Files in Trash can be restored anytime or permanently removed to free up space on your Memory Card.</span>
+          </div>
+          <button type="button" id="btnEmptyTrash" class="btn btn-outline btn-xs text-danger">
+            Empty Trash Forever
+          </button>
+        </section>
+
         <!-- Sleek Compact Upload Dropbar -->
-        <section class="upload-bar-wrap">
+        <section class="upload-bar-wrap" id="uploadBarWrap">
           <div id="dropZone" class="upload-dropbar" tabindex="0">
             <input type="file" id="fileInput" multiple hidden />
             <div class="dropbar-left">
@@ -224,7 +270,7 @@
               </div>
             </div>
 
-            <div class="dropbar-controls" onclick="event.stopPropagation()">
+            <div class="dropbar-controls" id="dropbarControls">
               <select id="uploadFolderSelect" class="compact-select" aria-label="Destination folder">
                 <option value="Movies & Media">Folder: Movies & Media</option>
                 <option value="Photos">Folder: Photos</option>
@@ -439,6 +485,53 @@
         </div>
 
         <div id="doctorHotspotsGrid" class="steps-grid"></div>
+      </section>
+
+      <!-- VIEW 6: SECURITY & ACTIVITY LEDGER -->
+      <section id="view-security" class="view-section">
+        <div class="section-header" style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 1rem;">
+          <div>
+            <h1>Security & Activity Center</h1>
+            <p>Tamper-evident cryptographic verification, server-enforced PIN Vault status, and real-time access logs for your Digital Memory Card.</p>
+          </div>
+          <button type="button" id="btnRefreshSecurity" class="btn btn-outline btn-sm">
+            Refresh Audit Log
+          </button>
+        </div>
+
+        <div class="steps-grid" style="margin-bottom: 1.25rem;">
+          <div class="surface-card step-card">
+            <div class="step-os-tag">SHA-256 INTEGRITY</div>
+            <h3>Content-Addressable Storage</h3>
+            <p class="helper-caption">
+              Every uploaded file is verified with a 256-bit cryptographic digest before you delete it from your device.
+            </p>
+          </div>
+
+          <div class="surface-card step-card">
+            <div class="step-os-tag">SERVER-ENFORCED VAULT</div>
+            <h3 id="secVaultStatusHeading">Private Vault Locked</h3>
+            <p class="helper-caption" id="secVaultStatusCaption">
+              Vault files require an HMAC-SHA256 signed PIN token before the server will stream or share them.
+            </p>
+          </div>
+
+          <div class="surface-card step-card">
+            <div class="step-os-tag">RATE LIMIT & CSP</div>
+            <h3>Zero-Trust Headers Active</h3>
+            <p class="helper-caption">
+              Protected by HttpOnly session cookies, brute-force PIN throttling, and strict Content-Security-Policy.
+            </p>
+          </div>
+        </div>
+
+        <div class="surface-card">
+          <div class="card-title-row">
+            <h3>Recent Security & Access Events</h3>
+            <span class="eyebrow-tag">TAMPER-EVIDENT AUDIT TRAIL</span>
+          </div>
+          <div id="securityAuditList" class="ledger-list"></div>
+        </div>
       </section>
     </div>
   </div>
@@ -691,6 +784,39 @@ const savedGB = 64 * 2;
       <button type="button" id="btnPrintReceipt" class="btn btn-outline btn-sm">
         Print / Save PDF
       </button>
+    </div>
+  </dialog>
+
+  <!-- MODAL 8: RENAME OR MOVE FILE -->
+  <dialog id="renameFileModal" class="dialog">
+    <div class="dialog-header">
+      <div>
+        <span class="eyebrow-tag">ORGANIZE MEMORY CARD</span>
+        <h3>Rename or Move File</h3>
+      </div>
+      <button type="button" class="icon-close" id="btnCloseRenameModal" aria-label="Close">✕</button>
+    </div>
+    <div class="dialog-body">
+      <form id="renameFileForm" class="dialog-form">
+        <input type="hidden" id="renameFileIdInput" />
+        <div class="field">
+          <label for="renameFileNameInput">File Name</label>
+          <input type="text" id="renameFileNameInput" class="input" required />
+        </div>
+        <div class="field">
+          <label for="renameFileFolderSelect">Folder Location</label>
+          <select id="renameFileFolderSelect" class="input">
+            <option value="Movies & Media">Movies & Media</option>
+            <option value="Photos">Photos</option>
+            <option value="Dev & Code">Dev & Code</option>
+            <option value="Documents">Documents</option>
+            <option value="Private Vault">Private Vault (PIN Locked)</option>
+          </select>
+        </div>
+        <button type="submit" class="btn btn-primary btn-block">
+          Save Changes
+        </button>
+      </form>
     </div>
   </dialog>
 

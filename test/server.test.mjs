@@ -349,3 +349,189 @@ test('7. Zero-Data Share Codes (CARD-XXXX) & 256GB MacBook Storage Doctor', asyn
   assert.equal(docData.hotspots.length, 4);
 });
 
+test('8. Production Healthcheck & Strict Zero-Trust Security Headers', async () => {
+  const res = await dispatch('/api/health');
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('x-frame-options'), 'SAMEORIGIN');
+  assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
+  assert.ok(res.headers.get('content-security-policy')?.includes("script-src 'self'"));
+
+  const data = await res.json();
+  assert.equal(data.status, 'healthy');
+  assert.equal(data.service, 'CardNG Digital Memory Card Engine');
+  assert.ok(typeof data.memoryRssMB === 'number');
+});
+
+test('9. Server-Enforced Private Vault: Blocks Stream & Share Until Signed PIN Token Issued', async () => {
+  const sRes = await dispatch('/api/session');
+  const sData = await sRes.json();
+  const token = sData.user.sessionToken;
+
+  // Upload a confidential file directly into Private Vault
+  const secretBuf = Buffer.from('CONFIDENTIAL_BVN_AND_PASSPORT_SCAN_2026', 'utf-8');
+  const sha256 = crypto.createHash('sha256').update(secretBuf).digest('hex');
+
+  const upRes = await dispatch('/api/files/upload', {
+    method: 'POST',
+    headers: {
+      'x-card-token': token,
+      'x-file-name': 'Passport_Vault_Copy.pdf',
+      'x-file-type': 'application/pdf',
+      'x-file-folder': 'Private Vault',
+      'x-file-sha256': sha256,
+      'x-file-vault': 'true'
+    },
+    body: secretBuf
+  });
+  assert.equal(upRes.status, 201);
+  const vaultFile = (await upRes.json()).file;
+  assert.equal(vaultFile.isVaultLocked, true);
+
+  // Attempt to stream WITHOUT unlocking Vault -> Must be blocked (403 Forbidden)
+  const blockedStream = await dispatch(vaultFile.streamUrl, {
+    headers: { 'x-card-token': token }
+  });
+  assert.equal(blockedStream.status, 403);
+  const blockedData = await blockedStream.json();
+  assert.ok(blockedData.error.includes('VAULT_LOCKED'));
+
+  // Attempt to share WITHOUT unlocking Vault -> Must be blocked (403 Forbidden)
+  const blockedShare = await dispatch(`/api/files/${vaultFile.id}/share`, {
+    method: 'POST',
+    headers: { 'x-card-token': token }
+  });
+  assert.equal(blockedShare.status, 403);
+
+  // Verify wrong PIN -> 403 + Audit Log entry
+  const badPinRes = await dispatch('/api/auth/verify-pin', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-card-token': token
+    },
+    body: { pin: '9999' }
+  });
+  assert.equal(badPinRes.status, 403);
+
+  // Verify correct starter PIN (0000) -> Issues cryptographic vaultToken
+  const goodPinRes = await dispatch('/api/auth/verify-pin', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-card-token': token
+    },
+    body: { pin: '0000' }
+  });
+  assert.equal(goodPinRes.status, 200);
+  const goodPinData = await goodPinRes.json();
+  assert.equal(goodPinData.unlocked, true);
+  assert.ok(goodPinData.vaultToken);
+
+  // Stream WITH cryptographic vaultToken -> 200 OK
+  const unlockedStream = await dispatch(vaultFile.streamUrl, {
+    headers: {
+      'x-card-token': token,
+      'x-vault-token': goodPinData.vaultToken
+    }
+  });
+  assert.equal(unlockedStream.status, 200);
+  const streamedContent = await unlockedStream.text();
+  assert.equal(streamedContent, 'CONFIDENTIAL_BVN_AND_PASSPORT_SCAN_2026');
+});
+
+test('10. File Rename/Move, Safety Trash Bin, Restore & Empty Trash Lifecycle', async () => {
+  const sRes = await dispatch('/api/session');
+  const token = (await sRes.json()).user.sessionToken;
+
+  const createRes = await dispatch('/api/files/create-text', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-card-token': token
+    },
+    body: {
+      name: 'draft_notes.txt',
+      folder: 'Documents',
+      content: 'Important client project notes'
+    }
+  });
+  const file = (await createRes.json()).file;
+
+  // 1. Rename & Move file
+  const renameRes = await dispatch(`/api/files/${file.id}`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-card-token': token
+    },
+    body: {
+      name: 'final_architecture.md',
+      folder: 'Dev & Code'
+    }
+  });
+  assert.equal(renameRes.status, 200);
+  const renamedFile = (await renameRes.json()).file;
+  assert.equal(renamedFile.name, 'final_architecture.md');
+  assert.equal(renamedFile.folder, 'Dev & Code');
+
+  // 2. Soft-Trash file
+  const trashRes = await dispatch(`/api/files/${file.id}/trash`, {
+    method: 'POST',
+    headers: { 'x-card-token': token }
+  });
+  assert.equal(trashRes.status, 200);
+  const trashedData = await trashRes.json();
+  assert.equal(trashedData.file.isTrashed, true);
+  assert.ok(trashedData.breakdown.trashBytes > 0);
+
+  // 3. Restore file from Trash
+  const restoreRes = await dispatch(`/api/files/${file.id}/restore`, {
+    method: 'POST',
+    headers: { 'x-card-token': token }
+  });
+  assert.equal(restoreRes.status, 200);
+  const restoredData = await restoreRes.json();
+  assert.equal(restoredData.file.isTrashed, false);
+  assert.equal(restoredData.breakdown.trashBytes, 0);
+
+  // 4. Move to Trash again and Empty Trash permanently
+  await dispatch(`/api/files/${file.id}/trash`, {
+    method: 'POST',
+    headers: { 'x-card-token': token }
+  });
+  const emptyRes = await dispatch('/api/files/trash/empty', {
+    method: 'DELETE',
+    headers: { 'x-card-token': token }
+  });
+  assert.equal(emptyRes.status, 200);
+  const emptyData = await emptyRes.json();
+  assert.equal(emptyData.deletedCount, 1);
+  assert.equal(emptyData.breakdown.trashBytes, 0);
+});
+
+test('11. Tamper-Evident Security Audit Ledger & Multi-Segment Storage Breakdown', async () => {
+  const sRes = await dispatch('/api/session');
+  const token = (await sRes.json()).user.sessionToken;
+
+  // Trigger a PIN verification to generate an audit event
+  await dispatch('/api/auth/verify-pin', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-card-token': token
+    },
+    body: { pin: '0000' }
+  });
+
+  const auditRes = await dispatch('/api/security/audit', {
+    headers: { 'x-card-token': token }
+  });
+  assert.equal(auditRes.status, 200);
+  const auditData = await auditRes.json();
+  assert.ok(Array.isArray(auditData.auditLogs));
+  assert.ok(auditData.auditLogs.length >= 1);
+  assert.equal(auditData.auditLogs[0].action, 'VAULT_UNLOCKED');
+  assert.ok(typeof auditData.breakdown.mediaBytes === 'number');
+});
+
+

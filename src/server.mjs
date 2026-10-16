@@ -9,7 +9,9 @@ import {
   checkRateLimit,
   applySecurityHeaders,
   getOrProvisionUser,
-  setSessionCookie
+  setSessionCookie,
+  setVaultUnlockCookie,
+  isVaultUnlockedForRequest
 } from './middleware/security.mjs';
 import {
   isValidSha256,
@@ -163,6 +165,20 @@ export function createAppServer() {
     }
 
     try {
+      // 0. GET /api/health — Production Load-Balancer & Container Healthcheck
+      if (pathname === '/api/health' && req.method === 'GET') {
+        const mem = process.memoryUsage();
+        return sendJson(res, 200, {
+          status: 'healthy',
+          service: 'CardNG Digital Memory Card Engine',
+          uptimeSeconds: Math.round(process.uptime()),
+          nodeVersion: process.version,
+          memoryRssMB: Math.round((mem.rss / (1024 * 1024)) * 10) / 10,
+          stats: db.getStats(),
+          timestamp: new Date().toISOString()
+        });
+      }
+
       // 1. GET /api/session — Zero-Login Instant Card Provisioning
       if (pathname === '/api/session' && req.method === 'GET') {
         const user = getOrProvisionUser(req, res, true);
@@ -170,6 +186,8 @@ export function createAppServer() {
           .getUserFiles(user.id)
           .map((f) => decorateFileWithStreamUrl(f, user.id));
         const payments = db.getUserPayments(user.id);
+        const breakdown = db.getStorageBreakdown(user.id);
+        const auditLogs = db.getUserAuditLogs(user.id);
         const lanIp = getLocalLanIp();
         const hostHeader = req.headers.host || `${lanIp}:${APP_CONFIG.port}`;
 
@@ -177,11 +195,24 @@ export function createAppServer() {
           user: sanitizeUserForClient(user),
           files,
           payments,
+          breakdown,
+          auditLogs,
+          vaultUnlocked: isVaultUnlockedForRequest(req, user.id),
           plans: STORAGE_PLANS,
           merchant: APP_CONFIG.merchant,
           stats: db.getStats(),
           webdavUrl: `http://${hostHeader}/webdav/${user.sessionToken}`,
           lanUrl: `http://${lanIp}:${APP_CONFIG.port}`
+        });
+      }
+
+      // 1b. GET /api/security/audit — Security & Activity Ledger for Current Card
+      if (pathname === '/api/security/audit' && req.method === 'GET') {
+        const user = getOrProvisionUser(req, res, true);
+        return sendJson(res, 200, {
+          auditLogs: db.getUserAuditLogs(user.id),
+          breakdown: db.getStorageBreakdown(user.id),
+          vaultUnlocked: isVaultUnlockedForRequest(req, user.id)
         });
       }
 
@@ -206,8 +237,15 @@ export function createAppServer() {
           pin: body.pin,
           displayName: body.displayName
         });
+        db.appendAuditLog(user.id, {
+          action: 'CARD_LOCKED_TO_PHONE',
+          detail: `Card ${updatedUser.cardSerial} permanently bound to ${updatedUser.phone} with 4-digit PIN`,
+          severity: 'SUCCESS',
+          ip: clientIp
+        });
         return sendJson(res, 200, {
           user: sanitizeUserForClient(updatedUser),
+          auditLogs: db.getUserAuditLogs(user.id),
           message: 'Memory Card permanently locked to your phone number and 4-digit PIN!'
         });
       }
@@ -228,6 +266,12 @@ export function createAppServer() {
           });
         }
         setSessionCookie(res, restoredUser.sessionToken);
+        db.appendAuditLog(restoredUser.id, {
+          action: 'CARD_RESTORED_ON_DEVICE',
+          detail: `Cross-device login succeeded for ${restoredUser.cardSerial}`,
+          severity: 'INFO',
+          ip: clientIp
+        });
         const files = db
           .getUserFiles(restoredUser.id)
           .map((f) => decorateFileWithStreamUrl(f, restoredUser.id));
@@ -235,11 +279,13 @@ export function createAppServer() {
           user: sanitizeUserForClient(restoredUser),
           files,
           payments: db.getUserPayments(restoredUser.id),
+          breakdown: db.getStorageBreakdown(restoredUser.id),
+          auditLogs: db.getUserAuditLogs(restoredUser.id),
           message: `Welcome back! Loaded Memory Card ${restoredUser.cardSerial}`
         });
       }
 
-      // 5. POST /api/auth/verify-pin — Unlock Private Vault Folder
+      // 5. POST /api/auth/verify-pin — Unlock Private Vault Folder (Issues Signed HMAC Token)
       if (pathname === '/api/auth/verify-pin' && req.method === 'POST') {
         const rl = checkRateLimit(`vault:${clientIp}`, 6, 10 * 60 * 1000);
         if (!rl.allowed) {
@@ -250,13 +296,30 @@ export function createAppServer() {
         const body = await readJsonBody(req);
         const valid = db.verifyUserPin(user.id, body.pin);
         if (!valid) {
+          db.appendAuditLog(user.id, {
+            action: 'VAULT_PIN_FAILED',
+            detail: 'Failed attempt to unlock Private Vault folder',
+            severity: 'WARN',
+            ip: clientIp
+          });
           return sendJson(res, 403, {
             error: user.isLockedToPhone
               ? 'Incorrect 4-digit PIN'
               : 'Incorrect PIN (Default starter PIN is 0000 until you lock your card)'
           });
         }
-        return sendJson(res, 200, { unlocked: true });
+        const vaultToken = setVaultUnlockCookie(res, user.id);
+        db.appendAuditLog(user.id, {
+          action: 'VAULT_UNLOCKED',
+          detail: 'Private Vault unlocked with verified 4-digit PIN (30-min cryptographic grant)',
+          severity: 'SUCCESS',
+          ip: clientIp
+        });
+        return sendJson(res, 200, {
+          unlocked: true,
+          vaultToken,
+          auditLogs: db.getUserAuditLogs(user.id)
+        });
       }
 
       // 6. POST /api/files/preflight — SHA-256 Deduplication Preflight Check (Zero-Data Instant Upload!)
@@ -526,8 +589,22 @@ export function createAppServer() {
       if (shareMatch && req.method === 'POST') {
         const user = getOrProvisionUser(req, res, false);
         if (!user) return sendJson(res, 401, { error: 'Unauthorized' });
+        const targetFile = db.getFileById(shareMatch[1]);
+        if (!targetFile || targetFile.userId !== user.id) {
+          return sendJson(res, 404, { error: 'File not found' });
+        }
+        if (targetFile.isVaultLocked && !isVaultUnlockedForRequest(req, user.id)) {
+          return sendJson(res, 403, {
+            error: 'VAULT_LOCKED: Unlock your Private Vault with your 4-digit PIN before sharing vault files.'
+          });
+        }
         const share = db.createShareCode(shareMatch[1], user.id);
-        if (!share) return sendJson(res, 404, { error: 'File not found' });
+        db.appendAuditLog(user.id, {
+          action: 'SHARE_CODE_CREATED',
+          detail: `Created zero-data share code ${share.shareCode} for "${targetFile.name}"`,
+          severity: 'INFO',
+          ip: clientIp
+        });
         return sendJson(res, 200, { share });
       }
 
@@ -537,10 +614,17 @@ export function createAppServer() {
         const body = await readJsonBody(req);
         const { file, share } = db.claimShareCode(body.shareCode, user.id);
         const updatedUser = db.getUserById(user.id);
+        db.appendAuditLog(user.id, {
+          action: 'SHARE_CODE_CLAIMED',
+          detail: `Claimed shared file "${file.name}" (${share.shareCode}) with 0 MB internet data`,
+          severity: 'SUCCESS',
+          ip: clientIp
+        });
         return sendJson(res, 201, {
           file: decorateFileWithStreamUrl(file, user.id),
           share,
-          user: sanitizeUserForClient(updatedUser)
+          user: sanitizeUserForClient(updatedUser),
+          breakdown: db.getStorageBreakdown(user.id)
         });
       }
 
@@ -572,6 +656,13 @@ export function createAppServer() {
           return sendJson(res, 403, { error: 'Expired or unauthorized stream link' });
         }
 
+        // Enforce server-side Private Vault PIN unlock for vault-locked files
+        if (file.isVaultLocked && !isVaultUnlockedForRequest(req, file.userId)) {
+          return sendJson(res, 403, {
+            error: 'VAULT_LOCKED: This file is protected inside your Private Vault. Enter your 4-digit PIN to stream or download.'
+          });
+        }
+
         return streamFileBlob(req, res, file, { download });
       }
 
@@ -583,10 +674,79 @@ export function createAppServer() {
         const body = await readJsonBody(req);
         const updated = db.toggleFileVault(vaultMatch[1], user.id, body.isVaultLocked);
         if (!updated) return sendJson(res, 404, { error: 'File not found' });
-        return sendJson(res, 200, { file: decorateFileWithStreamUrl(updated, user.id) });
+        return sendJson(res, 200, {
+          file: decorateFileWithStreamUrl(updated, user.id),
+          breakdown: db.getStorageBreakdown(user.id)
+        });
       }
 
-      // 11. DELETE /api/files/:id — Delete File from Card (Ref-Counted Physical Cleanup)
+      // 10b. POST /api/files/:id/trash — Soft-Delete File to 30-Day Safety Trash
+      const trashMatch = pathname.match(/^\/api\/files\/([^/]+)\/trash$/);
+      if (trashMatch && req.method === 'POST') {
+        const user = getOrProvisionUser(req, res, false);
+        if (!user) return sendJson(res, 401, { error: 'Unauthorized' });
+        const updated = db.softTrashFile(trashMatch[1], user.id);
+        if (!updated) return sendJson(res, 404, { error: 'File not found' });
+        return sendJson(res, 200, {
+          file: decorateFileWithStreamUrl(updated, user.id),
+          breakdown: db.getStorageBreakdown(user.id)
+        });
+      }
+
+      // 10c. POST /api/files/:id/restore — Restore File from Trash
+      const restoreMatch = pathname.match(/^\/api\/files\/([^/]+)\/restore$/);
+      if (restoreMatch && req.method === 'POST') {
+        const user = getOrProvisionUser(req, res, false);
+        if (!user) return sendJson(res, 401, { error: 'Unauthorized' });
+        const updated = db.restoreTrashedFile(restoreMatch[1], user.id);
+        if (!updated) return sendJson(res, 404, { error: 'File not found' });
+        return sendJson(res, 200, {
+          file: decorateFileWithStreamUrl(updated, user.id),
+          breakdown: db.getStorageBreakdown(user.id)
+        });
+      }
+
+      // 10d. DELETE /api/files/trash/empty — Permanently Empty User's Trash
+      if (pathname === '/api/files/trash/empty' && req.method === 'DELETE') {
+        const user = getOrProvisionUser(req, res, false);
+        if (!user) return sendJson(res, 401, { error: 'Unauthorized' });
+        const { deletedCount, physicalBlobsToDelete } = db.emptyUserTrash(user.id);
+        for (const sha of physicalBlobsToDelete) {
+          deletePhysicalBlob(sha);
+        }
+        db.appendAuditLog(user.id, {
+          action: 'TRASH_EMPTIED',
+          detail: `Permanently purged ${deletedCount} file(s) from Trash`,
+          severity: 'INFO',
+          ip: clientIp
+        });
+        const updatedUser = db.getUserById(user.id);
+        return sendJson(res, 200, {
+          deletedCount,
+          user: sanitizeUserForClient(updatedUser),
+          breakdown: db.getStorageBreakdown(user.id),
+          stats: db.getStats()
+        });
+      }
+
+      // 10e. PATCH /api/files/:id — Rename File or Move to Another Folder
+      const patchFileMatch = pathname.match(/^\/api\/files\/([^/]+)$/);
+      if (patchFileMatch && req.method === 'PATCH') {
+        const user = getOrProvisionUser(req, res, false);
+        if (!user) return sendJson(res, 401, { error: 'Unauthorized' });
+        const body = await readJsonBody(req);
+        const updated = db.renameOrMoveFile(patchFileMatch[1], user.id, {
+          name: body.name,
+          folder: body.folder
+        });
+        if (!updated) return sendJson(res, 404, { error: 'File not found' });
+        return sendJson(res, 200, {
+          file: decorateFileWithStreamUrl(updated, user.id),
+          breakdown: db.getStorageBreakdown(user.id)
+        });
+      }
+
+      // 11. DELETE /api/files/:id — Permanently Delete File from Card (Ref-Counted Physical Cleanup)
       const deleteMatch = pathname.match(/^\/api\/files\/([^/]+)$/);
       if (deleteMatch && req.method === 'DELETE') {
         const user = getOrProvisionUser(req, res, false);
@@ -602,6 +762,7 @@ export function createAppServer() {
         return sendJson(res, 200, {
           deletedId: deleteMatch[1],
           user: sanitizeUserForClient(updatedUser),
+          breakdown: db.getStorageBreakdown(user.id),
           stats: db.getStats()
         });
       }
@@ -624,6 +785,13 @@ export function createAppServer() {
           senderName: body.senderName || ''
         });
 
+        db.appendAuditLog(user.id, {
+          action: 'PAYMENT_CLAIM_SUBMITTED',
+          detail: `Submitted ₦${payment.amountNaira} ${payment.channel} transfer claim (${payment.reference}) for ${payment.planName}`,
+          severity: 'INFO',
+          ip: clientIp
+        });
+
         const tgResult = await notifyTelegramAdminOfPayment(payment);
         return sendJson(res, 201, {
           payment,
@@ -639,6 +807,17 @@ export function createAppServer() {
         const body = await readJsonBody(req);
         const action = body.action === 'REJECT' ? 'REJECT' : 'APPROVE';
         const { payment, user } = resolvePaymentAndNotifyUser(paymentId, action);
+        if (user) {
+          db.appendAuditLog(user.id, {
+            action: action === 'APPROVE' ? 'STORAGE_UPGRADE_APPROVED' : 'STORAGE_UPGRADE_REJECTED',
+            detail:
+              action === 'APPROVE'
+                ? `1-Tap Bot approved ${payment.reference} — Card expanded to ${payment.quotaLabel} (${payment.receiptNumber})`
+                : `Transfer claim ${payment.reference} was declined`,
+            severity: action === 'APPROVE' ? 'SUCCESS' : 'WARN',
+            ip: clientIp
+          });
+        }
         return sendJson(res, 200, {
           payment,
           user: sanitizeUserForClient(user)

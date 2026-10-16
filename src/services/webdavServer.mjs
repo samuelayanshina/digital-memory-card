@@ -104,7 +104,7 @@ export async function handleWebDavRequest(req, res) {
   }
 
   const { user, baseHref, relativeSegments } = resolved;
-  const userFiles = db.getUserFiles(user.id).filter((f) => !f.isVaultLocked);
+  const userFiles = db.getUserFiles(user.id).filter((f) => !f.isVaultLocked && !f.isTrashed);
 
   // macOS Finder Lock/Unlock support
   if (req.method === 'LOCK') {

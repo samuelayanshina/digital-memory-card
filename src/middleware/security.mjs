@@ -1,9 +1,11 @@
+import crypto from 'node:crypto';
 import { db } from '../db/database.mjs';
+import { APP_CONFIG } from '../config/plans.mjs';
 
 const rateBuckets = new Map();
 const activeUserStreams = new Map();
 
-// Clean up expired buckets every 5 minutes
+// Clean up expired rate limit buckets every 5 minutes
 setInterval(() => {
   const now = Date.now();
   for (const [key, bucket] of rateBuckets.entries()) {
@@ -28,7 +30,7 @@ export function checkRateLimit(key, maxRequests, windowMs) {
   };
 }
 
-export function acquireStreamSlot(userId, maxConcurrent = 3) {
+export function acquireStreamSlot(userId, maxConcurrent = 4) {
   const current = activeUserStreams.get(userId) || 0;
   if (current >= maxConcurrent) {
     return false;
@@ -48,6 +50,15 @@ export function applySecurityHeaders(res) {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('X-DNS-Prefetch-Control', 'off');
+  res.setHeader(
+    'Permissions-Policy',
+    'camera=(), microphone=(), geolocation=(), payment=()'
+  );
+  res.setHeader(
+    'Content-Security-Policy',
+    "default-src 'self'; img-src 'self' data: blob:; media-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'self';"
+  );
 }
 
 export function parseCookies(cookieHeader = '') {
@@ -62,12 +73,58 @@ export function parseCookies(cookieHeader = '') {
   return cookies;
 }
 
-export function setSessionCookie(res, sessionToken) {
+export function setSessionCookie(res, sessionToken, extraCookie = null) {
   const maxAge = 365 * 24 * 60 * 60; // 1 year
+  const primary = `cardng_token=${encodeURIComponent(
+    sessionToken
+  )}; Path=/; Max-Age=${maxAge}; HttpOnly; SameSite=Lax`;
+  if (extraCookie) {
+    res.setHeader('Set-Cookie', [primary, extraCookie]);
+  } else {
+    res.setHeader('Set-Cookie', primary);
+  }
+}
+
+export function createVaultUnlockToken(userId, ttlSeconds = 1800) {
+  const exp = Math.floor(Date.now() / 1000) + ttlSeconds;
+  const payload = `vault:${userId}:${exp}`;
+  const sig = crypto
+    .createHmac('sha256', APP_CONFIG.appSecret)
+    .update(payload)
+    .digest('hex');
+  return `${exp}.${sig}`;
+}
+
+export function setVaultUnlockCookie(res, userId) {
+  const token = createVaultUnlockToken(userId, 1800);
   res.setHeader(
     'Set-Cookie',
-    `cardng_token=${encodeURIComponent(sessionToken)}; Path=/; Max-Age=${maxAge}; SameSite=Lax`
+    `cardng_vault=${encodeURIComponent(token)}; Path=/; Max-Age=1800; HttpOnly; SameSite=Lax`
   );
+  return token;
+}
+
+export function isVaultUnlockedForRequest(req, userId) {
+  const cookies = parseCookies(req.headers.cookie);
+  const rawToken = req.headers['x-vault-token'] || cookies.cardng_vault;
+  if (!rawToken || typeof rawToken !== 'string') return false;
+  const [expStr, sig] = rawToken.split('.');
+  const exp = Number(expStr);
+  if (!exp || !sig || exp < Math.floor(Date.now() / 1000)) return false;
+
+  const expectedSig = crypto
+    .createHmac('sha256', APP_CONFIG.appSecret)
+    .update(`vault:${userId}:${exp}`)
+    .digest('hex');
+
+  try {
+    return crypto.timingSafeEqual(
+      Buffer.from(expectedSig, 'hex'),
+      Buffer.from(sig, 'hex')
+    );
+  } catch {
+    return false;
+  }
 }
 
 export function getOrProvisionUser(req, res, autoCreate = true) {

@@ -14,6 +14,7 @@ const defaultState = {
   files: {},       // fileId -> FileRecord
   payments: {},    // paymentId -> PaymentRecord
   shares: {},      // shareCode -> ShareRecord
+  auditLogs: {},   // userId -> Array<AuditEvent>
   stats: {
     totalPhysicalBytes: 0,
     totalVirtualBytes: 0,
@@ -223,12 +224,14 @@ export const db = {
     const record = {
       id,
       userId,
-      name: path.basename(name),
+      name: path.basename(name || 'Untitled_File'),
       folder,
       sha256,
       sizeBytes: Number(sizeBytes),
       mimeType: mimeType || 'application/octet-stream',
       isVaultLocked: Boolean(isVaultLocked),
+      isTrashed: false,
+      trashedAt: null,
       deduplicated: Boolean(deduplicated),
       safeToDeleteVerified: true,
       createdAt: new Date().toISOString()
@@ -260,9 +263,138 @@ export const db = {
     file.isVaultLocked = Boolean(isVaultLocked);
     if (file.isVaultLocked && file.folder !== 'Private Vault') {
       file.folder = 'Private Vault';
+    } else if (!file.isVaultLocked && file.folder === 'Private Vault') {
+      file.folder = 'All Files';
     }
     persistDatabase();
     return file;
+  },
+
+  renameOrMoveFile(fileId, userId, { name, folder }) {
+    const file = state.files[fileId];
+    if (!file || file.userId !== userId) return null;
+
+    if (typeof name === 'string' && name.trim()) {
+      const sanitized = path.basename(name.trim()).replace(/[<>:"/\\|?*\x00-\x1F]/g, '_');
+      if (sanitized) file.name = sanitized;
+    }
+    if (typeof folder === 'string' && folder.trim()) {
+      file.folder = folder.trim();
+      if (file.folder === 'Private Vault') {
+        file.isVaultLocked = true;
+      }
+    }
+    file.updatedAt = new Date().toISOString();
+    persistDatabase();
+    return file;
+  },
+
+  softTrashFile(fileId, userId) {
+    const file = state.files[fileId];
+    if (!file || file.userId !== userId) return null;
+    file.isTrashed = true;
+    file.trashedAt = new Date().toISOString();
+    persistDatabase();
+    return file;
+  },
+
+  restoreTrashedFile(fileId, userId) {
+    const file = state.files[fileId];
+    if (!file || file.userId !== userId) return null;
+    file.isTrashed = false;
+    file.trashedAt = null;
+    persistDatabase();
+    return file;
+  },
+
+  emptyUserTrash(userId) {
+    const trashedFiles = Object.values(state.files).filter(
+      (f) => f.userId === userId && f.isTrashed
+    );
+    const physicalBlobsToDelete = [];
+    for (const f of trashedFiles) {
+      const res = db.deleteFileRecord(f.id, userId);
+      if (res && res.shouldDeletePhysicalBlob) {
+        physicalBlobsToDelete.push(res.deletedFile.sha256);
+      }
+    }
+    return {
+      deletedCount: trashedFiles.length,
+      physicalBlobsToDelete
+    };
+  },
+
+  getStorageBreakdown(userId) {
+    const files = db.getUserFiles(userId);
+    const breakdown = {
+      mediaBytes: 0,
+      photoBytes: 0,
+      devBytes: 0,
+      docBytes: 0,
+      vaultBytes: 0,
+      trashBytes: 0,
+      otherBytes: 0
+    };
+
+    for (const f of files) {
+      const sz = Number(f.sizeBytes || 0);
+      if (f.isTrashed) {
+        breakdown.trashBytes += sz;
+      } else if (f.isVaultLocked || f.folder === 'Private Vault') {
+        breakdown.vaultBytes += sz;
+      } else if (
+        f.folder === 'Movies & Media' ||
+        f.mimeType?.startsWith('video/') ||
+        f.mimeType?.startsWith('audio/')
+      ) {
+        breakdown.mediaBytes += sz;
+      } else if (f.folder === 'Photos' || f.mimeType?.startsWith('image/')) {
+        breakdown.photoBytes += sz;
+      } else if (
+        f.folder === 'Dev & Code' ||
+        /\.(js|mjs|ts|py|md|json|sh|html|css|sql|yaml|yml|zip|tar|gz)$/i.test(f.name)
+      ) {
+        breakdown.devBytes += sz;
+      } else if (
+        f.folder === 'Documents' ||
+        f.mimeType?.includes('pdf') ||
+        f.mimeType?.startsWith('text/')
+      ) {
+        breakdown.docBytes += sz;
+      } else {
+        breakdown.otherBytes += sz;
+      }
+    }
+    return breakdown;
+  },
+
+  appendAuditLog(userId, { action, detail, severity = 'INFO', ip = '' }) {
+    if (!userId) return null;
+    if (!state.auditLogs) state.auditLogs = {};
+    if (!Array.isArray(state.auditLogs[userId])) {
+      state.auditLogs[userId] = [];
+    }
+    const entry = {
+      id: `aud_${crypto.randomBytes(5).toString('hex')}`,
+      action,
+      detail,
+      severity,
+      ip: ip ? String(ip).replace(/(\.\d+)$/, '.xxx') : 'local',
+      createdAt: new Date().toISOString()
+    };
+    state.auditLogs[userId].unshift(entry);
+    if (state.auditLogs[userId].length > 80) {
+      state.auditLogs[userId] = state.auditLogs[userId].slice(0, 80);
+    }
+    persistDatabase();
+    return entry;
+  },
+
+  getUserAuditLogs(userId) {
+    if (!state.auditLogs || !Array.isArray(state.auditLogs[userId])) {
+      return [];
+    }
+    return state.auditLogs[userId];
   },
 
   deleteFileRecord(fileId, userId) {

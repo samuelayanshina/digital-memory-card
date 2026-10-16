@@ -2,6 +2,8 @@ const state = {
   user: null,
   files: [],
   payments: [],
+  breakdown: {},
+  auditLogs: [],
   pendingAdminClaims: [],
   plans: {},
   merchant: {},
@@ -92,7 +94,8 @@ function switchView(viewId, folder = null) {
     state.activeFolder = folder;
     const heading = document.getElementById('currentFolderHeading');
     if (heading) {
-      heading.textContent = folder === 'ALL' ? 'All Files' : folder;
+      heading.textContent =
+        folder === 'ALL' ? 'All Files' : folder === 'TRASH' ? 'Trash Bin' : folder;
     }
   }
 
@@ -114,7 +117,81 @@ function switchView(viewId, folder = null) {
     renderFiles();
   } else if (viewId === 'view-doctor') {
     runMacStorageDoctorScan();
+  } else if (viewId === 'view-security') {
+    renderSecurityAudit();
   }
+}
+
+function renderStorageBreakdown() {
+  const quota = (state.user && state.user.quotaBytes) || 1;
+  const bd = state.breakdown || {};
+  const scaleSeg = (bytes) => {
+    if (!bytes || bytes <= 0) return 0;
+    return Math.min(100, Math.max(1.5, (bytes / quota) * 100));
+  };
+
+  const setSeg = (segId, valId, bytes) => {
+    const segEl = document.getElementById(segId);
+    const valEl = document.getElementById(valId);
+    if (segEl) segEl.style.width = `${scaleSeg(bytes)}%`;
+    if (valEl) valEl.textContent = formatBytes(bytes || 0);
+  };
+
+  setSeg('bdSegMedia', 'bdValMedia', bd.mediaBytes);
+  setSeg('bdSegPhotos', 'bdValPhotos', bd.photoBytes);
+  setSeg('bdSegDev', 'bdValDev', (bd.devBytes || 0) + (bd.otherBytes || 0));
+  setSeg('bdSegDocs', 'bdValDocs', bd.docBytes);
+  setSeg('bdSegVault', 'bdValVault', bd.vaultBytes);
+  setSeg('bdSegTrash', 'bdValTrash', bd.trashBytes);
+}
+
+function renderSecurityAudit() {
+  const heading = document.getElementById('secVaultStatusHeading');
+  const caption = document.getElementById('secVaultStatusCaption');
+  if (heading && caption) {
+    if (state.vaultUnlocked) {
+      heading.textContent = 'Private Vault Unlocked (Active Grant)';
+      caption.textContent =
+        'Cryptographic HMAC-SHA256 PIN grant is active for this session (auto-expires after 30 minutes).';
+    } else {
+      heading.textContent = 'Private Vault Locked';
+      caption.textContent =
+        'Vault files require an HMAC-SHA256 signed PIN token before the server will stream or share them.';
+    }
+  }
+
+  const listEl = document.getElementById('securityAuditList');
+  if (!listEl) return;
+  const logs = state.auditLogs || [];
+  if (logs.length === 0) {
+    listEl.innerHTML = `<p class="helper-caption">No security events logged yet. Lock your card, unlock your vault, or share a file to generate cryptographic audit entries.</p>`;
+    return;
+  }
+
+  listEl.innerHTML = logs
+    .map((entry) => {
+      const badgeStyle =
+        entry.severity === 'WARN'
+          ? 'background: #fef2f2; color: #dc2626;'
+          : entry.severity === 'SUCCESS'
+            ? ''
+            : 'background: #f1f5f9; color: #475569;';
+      return `
+      <div class="claim-item">
+        <div>
+          <strong>${escapeHtml(entry.action)}</strong>
+          <div class="file-meta">${escapeHtml(entry.detail)}</div>
+        </div>
+        <div style="text-align: right;">
+          <span class="safe-badge" style="${badgeStyle}">${escapeHtml(entry.severity)}</span>
+          <div class="file-meta" style="margin-top: 0.25rem;">
+            ${new Date(entry.createdAt).toLocaleTimeString()} · IP ${escapeHtml(entry.ip)}
+          </div>
+        </div>
+      </div>
+    `;
+    })
+    .join('');
 }
 
 function renderCardHeader() {
@@ -158,18 +235,30 @@ function renderCardHeader() {
 
   document.getElementById('webdavUrlInput').value = state.webdavUrl;
   document.getElementById('lanUrlText').textContent = state.lanUrl;
+  renderStorageBreakdown();
 }
 
 function renderFiles() {
   const grid = document.getElementById('filesGrid');
-  document.getElementById('fileCountPill').textContent = String(state.files.length);
+  const activeFilesCount = state.files.filter((f) => !f.isTrashed).length;
+  const trashedFilesCount = state.files.filter((f) => f.isTrashed).length;
+
+  document.getElementById('fileCountPill').textContent = String(activeFilesCount);
+  const trashPill = document.getElementById('trashCountPill');
+  if (trashPill) trashPill.textContent = String(trashedFilesCount);
+
+  const isTrashView = state.activeFolder === 'TRASH';
+  const trashBanner = document.getElementById('emptyTrashBanner');
+  const uploadBarWrap = document.getElementById('uploadBarWrap');
+  if (trashBanner) trashBanner.classList.toggle('hidden', !isTrashView);
+  if (uploadBarWrap) uploadBarWrap.classList.toggle('hidden', isTrashView);
 
   if (state.activeFolder === 'Private Vault' && !state.vaultUnlocked) {
     grid.innerHTML = `
       <div class="surface-card" style="grid-column: 1 / -1; text-align: center; padding: 3rem 1.5rem;">
         <h3 style="margin-bottom: 0.35rem;">Private Vault Locked</h3>
         <p class="helper-caption" style="max-width: 400px; margin: 0 auto 1.25rem;">
-          Enter your 4-digit security PIN (default is <code>0000</code> on guest cards) to view or stream files in your vault.
+          Enter your 4-digit security PIN (default is <code>0000</code> on guest cards) to issue a cryptographic unlock token and view or stream vault files.
         </p>
         <div style="display: flex; gap: 0.5rem; justify-content: center; max-width: 280px; margin: 0 auto;">
           <input type="password" id="vaultPinPromptInput" class="input mono" placeholder="4-Digit PIN" maxlength="4" inputmode="numeric" />
@@ -183,12 +272,17 @@ function renderFiles() {
   }
 
   const filtered = state.files.filter((file) => {
-    if (state.activeFolder === 'Private Vault') {
-      if (!file.isVaultLocked) return false;
-    } else if (state.activeFolder !== 'ALL') {
-      if (file.isVaultLocked || file.folder !== state.activeFolder) return false;
+    if (isTrashView) {
+      if (!file.isTrashed) return false;
     } else {
-      if (file.isVaultLocked && !state.vaultUnlocked) return false;
+      if (file.isTrashed) return false;
+      if (state.activeFolder === 'Private Vault') {
+        if (!file.isVaultLocked) return false;
+      } else if (state.activeFolder !== 'ALL') {
+        if (file.isVaultLocked || file.folder !== state.activeFolder) return false;
+      } else {
+        if (file.isVaultLocked && !state.vaultUnlocked) return false;
+      }
     }
 
     if (state.searchQuery) {
@@ -198,6 +292,18 @@ function renderFiles() {
   });
 
   if (filtered.length === 0) {
+    if (isTrashView) {
+      grid.innerHTML = `
+        <div class="surface-card" style="grid-column: 1 / -1; text-align: center; padding: 3rem 1.5rem;">
+          <h3 style="font-size: 1.05rem; margin-bottom: 0.35rem;">Trash Bin is Clean</h3>
+          <p class="helper-caption" style="max-width: 420px; margin: 0 auto;">
+            Deleted files stay here until you empty the trash, protecting you from accidental data loss after offloading from your phone or Mac.
+          </p>
+        </div>
+      `;
+      return;
+    }
+
     grid.innerHTML = `
       <div class="surface-card" style="grid-column: 1 / -1; text-align: center; padding: 3rem 1.5rem;">
         <h3 style="font-size: 1.05rem; margin-bottom: 0.35rem;">Your Digital Memory Card is Ready</h3>
@@ -242,20 +348,34 @@ function renderFiles() {
       </div>
 
       <div class="file-actions">
-        <button class="btn btn-primary btn-xs" data-action="stream" data-id="${file.id}">
-          ${editable ? 'Studio / Run' : 'Stream'}
-        </button>
-        <button class="btn btn-outline btn-xs" data-action="share" data-id="${file.id}" title="Share with a friend using 0 MB internet data">
-          Share
-        </button>
-        <button class="btn btn-ghost btn-xs" data-action="toggle-vault" data-id="${file.id}">
-          ${file.isVaultLocked ? 'Unvault' : 'Vault'}
-        </button>
-        <button class="btn btn-danger btn-xs" style="margin-left: auto;" data-action="delete" data-id="${
-          file.id
-        }">
-          Delete
-        </button>
+        ${
+          file.isTrashed
+            ? `
+          <button class="btn btn-primary btn-xs" data-action="restore" data-id="${file.id}">
+            Restore File
+          </button>
+          <button class="btn btn-danger btn-xs" style="margin-left: auto;" data-action="delete-forever" data-id="${file.id}">
+            Delete Forever
+          </button>
+        `
+            : `
+          <button class="btn btn-primary btn-xs" data-action="stream" data-id="${file.id}">
+            ${editable ? 'Studio / Run' : 'Stream'}
+          </button>
+          <button class="btn btn-outline btn-xs" data-action="share" data-id="${file.id}" title="Share with a friend using 0 MB internet data">
+            Share
+          </button>
+          <button class="btn btn-ghost btn-xs" data-action="rename" data-id="${file.id}">
+            Rename
+          </button>
+          <button class="btn btn-ghost btn-xs" data-action="toggle-vault" data-id="${file.id}">
+            ${file.isVaultLocked ? 'Unvault' : 'Vault'}
+          </button>
+          <button class="btn btn-danger btn-xs" style="margin-left: auto;" data-action="trash" data-id="${file.id}">
+            Trash
+          </button>
+        `
+        }
       </div>
     </article>
   `;
@@ -277,7 +397,8 @@ async function unlockVaultWithPin() {
     return;
   }
   state.vaultUnlocked = true;
-  showBanner('Private Vault unlocked.');
+  if (data.auditLogs) state.auditLogs = data.auditLogs;
+  showBanner('Private Vault unlocked with signed cryptographic token.');
   renderFiles();
 }
 
@@ -828,6 +949,9 @@ async function loadSession() {
   state.user = data.user;
   state.files = data.files || [];
   state.payments = data.payments || [];
+  state.breakdown = data.breakdown || {};
+  state.auditLogs = data.auditLogs || [];
+  state.vaultUnlocked = Boolean(data.vaultUnlocked);
   state.plans = data.plans || {};
   state.merchant = data.merchant || {};
   state.webdavUrl = data.webdavUrl || '';
@@ -845,6 +969,7 @@ async function loadSession() {
   renderCardHeader();
   renderFiles();
   renderPlansAndPayments();
+  renderSecurityAudit();
   await fetchPendingClaims();
 }
 
@@ -867,12 +992,18 @@ window.addEventListener('DOMContentLoaded', async () => {
     switchView('view-upgrade');
   });
 
+  // CSP-safe stopPropagation on dropbar controls
+  const dropbarControls = document.getElementById('dropbarControls');
+  if (dropbarControls) {
+    dropbarControls.addEventListener('click', (e) => e.stopPropagation());
+  }
+
   // Primary Upload & Dropzone
   const fileInput = document.getElementById('fileInput');
   const dropZone = document.getElementById('dropZone');
 
   document.getElementById('btnPrimaryUpload').addEventListener('click', () => {
-    switchView('view-files');
+    switchView('view-files', 'ALL');
     fileInput.click();
   });
 
@@ -898,13 +1029,44 @@ window.addEventListener('DOMContentLoaded', async () => {
     const res = await fetch('/api/files/seed-demo', { method: 'POST' });
     const data = await res.json();
     if (res.ok) {
-      state.user = data.user;
-      state.files = [...data.files, ...state.files];
-      renderCardHeader();
-      renderFiles();
+      await loadSession();
       showBanner('Sample audio and runnable developer files added to your Memory Card.');
     }
   });
+
+  // Empty Trash Button
+  const btnEmptyTrash = document.getElementById('btnEmptyTrash');
+  if (btnEmptyTrash) {
+    btnEmptyTrash.addEventListener('click', async () => {
+      const res = await fetch('/api/files/trash/empty', { method: 'DELETE' });
+      const data = await res.json();
+      if (res.ok) {
+        state.files = state.files.filter((f) => !f.isTrashed);
+        state.user = data.user;
+        state.breakdown = data.breakdown || state.breakdown;
+        renderCardHeader();
+        renderFiles();
+        showBanner(`Emptied Trash (${data.deletedCount} file(s) permanently purged).`);
+      }
+    });
+  }
+
+  // Refresh Security Audit Log
+  const btnRefreshSec = document.getElementById('btnRefreshSecurity');
+  if (btnRefreshSec) {
+    btnRefreshSec.addEventListener('click', async () => {
+      const res = await fetch('/api/security/audit');
+      const data = await res.json();
+      if (res.ok) {
+        state.auditLogs = data.auditLogs || [];
+        state.breakdown = data.breakdown || state.breakdown;
+        state.vaultUnlocked = Boolean(data.vaultUnlocked);
+        renderSecurityAudit();
+        renderStorageBreakdown();
+        showBanner('Security audit trail refreshed.');
+      }
+    });
+  }
 
   // Create New Cloud File Modal
   const createFileModal = document.getElementById('createFileModal');
@@ -931,12 +1093,40 @@ window.addEventListener('DOMContentLoaded', async () => {
       showBanner(data.error || 'Could not create file', true);
       return;
     }
-    state.user = data.user;
-    state.files.unshift(data.file);
     createFileModal.close();
+    await loadSession();
+    showBanner(`Created "${data.file.name}" directly on your Memory Card (0B local space used).`);
+  });
+
+  // Rename or Move File Modal
+  const renameFileModal = document.getElementById('renameFileModal');
+  document
+    .getElementById('btnCloseRenameModal')
+    .addEventListener('click', () => renameFileModal.close());
+
+  document.getElementById('renameFileForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const fileId = document.getElementById('renameFileIdInput').value;
+    const name = document.getElementById('renameFileNameInput').value;
+    const folder = document.getElementById('renameFileFolderSelect').value;
+
+    const res = await fetch(`/api/files/${fileId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, folder })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      showBanner(data.error || 'Could not update file', true);
+      return;
+    }
+    const idx = state.files.findIndex((f) => f.id === fileId);
+    if (idx >= 0) state.files[idx] = data.file;
+    if (data.breakdown) state.breakdown = data.breakdown;
+    renameFileModal.close();
     renderCardHeader();
     renderFiles();
-    showBanner(`Created "${data.file.name}" directly on your Memory Card (0B local space used).`);
+    showBanner(`Updated "${data.file.name}" (${data.file.folder}).`);
   });
 
   // Claim Shared Code Modal
@@ -963,6 +1153,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     }
     state.user = data.user;
     state.files.unshift(data.file);
+    if (data.breakdown) state.breakdown = data.breakdown;
     claimShareModal.close();
     renderCardHeader();
     renderFiles();
@@ -983,7 +1174,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     }
   });
 
-  // File Card Actions (Stream/Studio, Share, Vault, Delete)
+  // File Card Actions (Stream/Studio, Share, Rename, Vault, Trash, Restore, Delete Forever)
   document.getElementById('filesGrid').addEventListener('click', async (e) => {
     const btn = e.target.closest('button[data-action]');
     if (!btn) return;
@@ -995,12 +1186,24 @@ window.addEventListener('DOMContentLoaded', async () => {
     } else if (action === 'share') {
       const res = await fetch(`/api/files/${fileId}/share`, { method: 'POST' });
       const data = await res.json();
-      if (res.ok && data.share) {
+      if (!res.ok) {
+        showBanner(data.error || 'Cannot share this file', true);
+        return;
+      }
+      if (data.share) {
         navigator.clipboard.writeText(data.share.shareCode).catch(() => {});
         showBanner(
           `Zero-Data Share Code "${data.share.shareCode}" copied! Anyone can claim "${data.share.name}" using 0 MB data.`
         );
       }
+    } else if (action === 'rename') {
+      const file = state.files.find((f) => f.id === fileId);
+      if (!file) return;
+      document.getElementById('renameFileIdInput').value = file.id;
+      document.getElementById('renameFileNameInput').value = file.name;
+      document.getElementById('renameFileFolderSelect').value =
+        file.folder === 'All Files' ? 'Documents' : file.folder;
+      renameFileModal.showModal();
     } else if (action === 'toggle-vault') {
       const file = state.files.find((f) => f.id === fileId);
       if (!file) return;
@@ -1013,6 +1216,8 @@ window.addEventListener('DOMContentLoaded', async () => {
       if (res.ok) {
         const idx = state.files.findIndex((f) => f.id === fileId);
         if (idx >= 0) state.files[idx] = data.file;
+        if (data.breakdown) state.breakdown = data.breakdown;
+        renderCardHeader();
         renderFiles();
         showBanner(
           data.file.isVaultLocked
@@ -1020,15 +1225,38 @@ window.addEventListener('DOMContentLoaded', async () => {
             : `Removed "${data.file.name}" from Private Vault.`
         );
       }
-    } else if (action === 'delete') {
+    } else if (action === 'trash') {
+      const res = await fetch(`/api/files/${fileId}/trash`, { method: 'POST' });
+      const data = await res.json();
+      if (res.ok) {
+        const idx = state.files.findIndex((f) => f.id === fileId);
+        if (idx >= 0) state.files[idx] = data.file;
+        if (data.breakdown) state.breakdown = data.breakdown;
+        renderCardHeader();
+        renderFiles();
+        showBanner(`Moved "${data.file.name}" to Trash. You can restore it anytime from Trash.`);
+      }
+    } else if (action === 'restore') {
+      const res = await fetch(`/api/files/${fileId}/restore`, { method: 'POST' });
+      const data = await res.json();
+      if (res.ok) {
+        const idx = state.files.findIndex((f) => f.id === fileId);
+        if (idx >= 0) state.files[idx] = data.file;
+        if (data.breakdown) state.breakdown = data.breakdown;
+        renderCardHeader();
+        renderFiles();
+        showBanner(`Restored "${data.file.name}" from Trash.`);
+      }
+    } else if (action === 'delete-forever' || action === 'delete') {
       const res = await fetch(`/api/files/${fileId}`, { method: 'DELETE' });
       const data = await res.json();
       if (res.ok) {
         state.files = state.files.filter((f) => f.id !== fileId);
         state.user = data.user;
+        if (data.breakdown) state.breakdown = data.breakdown;
         renderCardHeader();
         renderFiles();
-        showBanner('File deleted from Memory Card.');
+        showBanner('File permanently removed from Memory Card.');
       }
     }
   });
@@ -1199,8 +1427,10 @@ window.addEventListener('DOMContentLoaded', async () => {
       return;
     }
     state.user = data.user;
+    if (data.auditLogs) state.auditLogs = data.auditLogs;
     lockModal.close();
     renderCardHeader();
+    renderSecurityAudit();
     showBanner(data.message);
   });
 

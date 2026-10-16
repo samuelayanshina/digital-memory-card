@@ -1,4 +1,4 @@
-const CACHE_NAME = 'cardng-shell-v3';
+const CACHE_NAME = 'cardng-shell-v4';
 const SHELL_ASSETS = ['/', '/index.html', '/css/styles.css', '/js/app.js', '/manifest.json'];
 
 self.addEventListener('install', (event) => {
