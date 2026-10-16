@@ -849,6 +849,11 @@ function renderAdminPendingClaims() {
 
 function connectLiveEvents() {
   const es = new EventSource('/api/events/stream');
+  es.onopen = () => {
+    if (!state.user) {
+      loadSession().catch(() => {});
+    }
+  };
   es.onmessage = async (event) => {
     try {
       const data = JSON.parse(event.data);
@@ -880,11 +885,12 @@ function connectLiveEvents() {
 }
 
 function connectP2PRoom() {
-  const roomCode = document.getElementById('p2pRoomInput').value.trim() || '2026';
+  const roomInput = document.getElementById('p2pRoomInput');
+  const roomCode = (roomInput ? roomInput.value.trim() : '') || '2026';
   const deviceInput = document.getElementById('p2pDeviceName');
   const defaultDevice = navigator.platform ? `${navigator.platform}` : 'CardNG Device';
-  const deviceName = deviceInput.value.trim() || defaultDevice;
-  deviceInput.value = deviceName;
+  const deviceName = (deviceInput ? deviceInput.value.trim() : '') || defaultDevice;
+  if (deviceInput) deviceInput.value = deviceName;
 
   if (state.p2pEventSource) {
     state.p2pEventSource.close();
@@ -898,18 +904,23 @@ function connectP2PRoom() {
   const es = new EventSource(url);
   state.p2pEventSource = es;
 
-  document.getElementById('p2pRoomStatus').innerHTML = `
-    Connected to Room <strong>#${escapeHtml(roomCode)}</strong> as <strong>${escapeHtml(
-      deviceName
-    )}</strong> (0 MB Internet Data Mode)
-  `;
-  document.getElementById('btnBeamP2PFile').disabled = false;
+  const statusEl = document.getElementById('p2pRoomStatus');
+  if (statusEl) {
+    statusEl.innerHTML = `
+      Connected to Room <strong>#${escapeHtml(roomCode)}</strong> as <strong>${escapeHtml(
+        deviceName
+      )}</strong> (0 MB Internet Data Mode)
+    `;
+  }
+  const beamBtn = document.getElementById('btnBeamP2PFile');
+  if (beamBtn) beamBtn.disabled = false;
 
   es.onmessage = (e) => {
     try {
       const msg = JSON.parse(e.data);
       if (msg.type === 'PEERS_UPDATED') {
         const peersEl = document.getElementById('p2pPeersList');
+        if (!peersEl) return;
         const others = msg.peers.filter((p) => p.peerId !== state.p2pPeerId);
         if (others.length === 0) {
           peersEl.innerHTML = `<p class="helper-caption">Waiting for another device or browser tab to join Room <strong>#${escapeHtml(
@@ -929,6 +940,7 @@ function connectP2PRoom() {
         }
       } else if (msg.type === 'P2P_FILE_BEAM') {
         const receivedBox = document.getElementById('p2pReceivedBox');
+        if (!receivedBox) return;
         const item = document.createElement('div');
         item.className = 'claim-item';
         item.style.marginTop = '0.6rem';
@@ -961,13 +973,14 @@ async function beamLocalP2PFile(file) {
 
   const reader = new FileReader();
   reader.onload = async () => {
+    const devEl = document.getElementById('p2pDeviceName');
     await fetch('/api/p2p/signal', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         roomCode: state.p2pRoomCode,
         senderPeerId: state.p2pPeerId,
-        senderDevice: document.getElementById('p2pDeviceName').value || 'CardNG Device',
+        senderDevice: (devEl && devEl.value) || 'CardNG Device',
         type: 'P2P_FILE_BEAM',
         fileName: file.name,
         fileSize: file.size,
@@ -980,140 +993,149 @@ async function beamLocalP2PFile(file) {
 }
 
 async function loadSession() {
-  const res = await fetch('/api/session');
-  const data = await res.json();
-  state.user = data.user;
-  state.files = data.files || [];
-  state.payments = data.payments || [];
-  state.breakdown = data.breakdown || {};
-  state.auditLogs = data.auditLogs || [];
-  state.vaultUnlocked = Boolean(data.vaultUnlocked);
-  state.plans = data.plans || {};
-  state.merchant = data.merchant || {};
-  state.webdavUrl = data.webdavUrl || '';
-  state.lanUrl = data.lanUrl || '';
+  try {
+    const res = await fetch('/api/session', { cache: 'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    state.user = data.user;
+    state.files = data.files || [];
+    state.payments = data.payments || [];
+    state.breakdown = data.breakdown || {};
+    state.auditLogs = data.auditLogs || [];
+    state.vaultUnlocked = Boolean(data.vaultUnlocked);
+    state.plans = data.plans || {};
+    state.merchant = data.merchant || {};
+    state.webdavUrl = data.webdavUrl || '';
+    state.lanUrl = data.lanUrl || '';
 
-  if (state.merchant.opay) {
-    document.getElementById('opayNumberText').textContent = state.merchant.opay.accountNumber;
-    document.getElementById('opayNameText').textContent = state.merchant.opay.accountName;
-  }
-  if (state.merchant.palmpay) {
-    document.getElementById('palmpayNumberText').textContent = state.merchant.palmpay.accountNumber;
-    document.getElementById('palmpayNameText').textContent = state.merchant.palmpay.accountName;
-  }
+    const opayNum = document.getElementById('opayNumberText');
+    const opayName = document.getElementById('opayNameText');
+    if (state.merchant.opay && opayNum && opayName) {
+      opayNum.textContent = state.merchant.opay.accountNumber;
+      opayName.textContent = state.merchant.opay.accountName;
+    }
+    const palmNum = document.getElementById('palmpayNumberText');
+    const palmName = document.getElementById('palmpayNameText');
+    if (state.merchant.palmpay && palmNum && palmName) {
+      palmNum.textContent = state.merchant.palmpay.accountNumber;
+      palmName.textContent = state.merchant.palmpay.accountName;
+    }
 
-  renderCardHeader();
-  renderFiles();
-  renderPlansAndPayments();
-  renderSecurityAudit();
-  await fetchPendingClaims();
+    renderCardHeader();
+    renderFiles();
+    renderPlansAndPayments();
+    renderSecurityAudit();
+    await fetchPendingClaims();
+  } catch {
+    showBanner(
+      'Server connection paused — make sure "npm start" is running in your terminal, then click any button.',
+      true
+    );
+  }
 }
 
 window.addEventListener('DOMContentLoaded', async () => {
+  const on = (idOrEl, event, handler) => {
+    const el = typeof idOrEl === 'string' ? document.getElementById(idOrEl) : idOrEl;
+    if (el) el.addEventListener(event, handler);
+  };
+
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('/sw.js').catch(() => {});
+    navigator.serviceWorker
+      .register('/sw.js?v=6')
+      .then((reg) => reg.update().catch(() => {}))
+      .catch(() => {});
   }
 
-  await loadSession();
-  connectLiveEvents();
-
-  // Sidebar Navigation
+  // 1. Bind ALL UI & Button Event Listeners FIRST so buttons are 100% responsive immediately
   document.querySelectorAll('.nav-item').forEach((btn) => {
     btn.addEventListener('click', () => {
       switchView(btn.dataset.view, btn.dataset.folder || null);
     });
   });
 
-  document.getElementById('btnSidebarUpgrade').addEventListener('click', () => {
+  on('btnSidebarUpgrade', 'click', () => {
     switchView('view-upgrade');
   });
 
   // CSP-safe stopPropagation on dropbar controls
-  const dropbarControls = document.getElementById('dropbarControls');
-  if (dropbarControls) {
-    dropbarControls.addEventListener('click', (e) => e.stopPropagation());
-  }
+  on('dropbarControls', 'click', (e) => e.stopPropagation());
 
   // Primary Upload & Dropzone
   const fileInput = document.getElementById('fileInput');
   const dropZone = document.getElementById('dropZone');
 
-  document.getElementById('btnPrimaryUpload').addEventListener('click', () => {
+  on('btnPrimaryUpload', 'click', () => {
     switchView('view-files', 'ALL');
-    fileInput.click();
+    if (fileInput) fileInput.click();
   });
 
-  dropZone.addEventListener('click', () => fileInput.click());
-  fileInput.addEventListener('change', (e) => {
+  on(dropZone, 'click', () => {
+    if (fileInput) fileInput.click();
+  });
+  on(fileInput, 'change', (e) => {
     handleFilesSelected(e.target.files);
     fileInput.value = '';
   });
 
-  dropZone.addEventListener('dragover', (e) => {
+  on(dropZone, 'dragover', (e) => {
     e.preventDefault();
     dropZone.classList.add('dragover');
   });
-  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
-  dropZone.addEventListener('drop', (e) => {
+  on(dropZone, 'dragleave', () => dropZone.classList.remove('dragover'));
+  on(dropZone, 'drop', (e) => {
     e.preventDefault();
     dropZone.classList.remove('dragover');
     handleFilesSelected(e.dataTransfer.files);
   });
 
   // Seed Demo Files
-  document.getElementById('btnSeedDemoFiles').addEventListener('click', async () => {
-    const res = await fetch('/api/files/seed-demo', { method: 'POST' });
-    const data = await res.json();
-    if (res.ok) {
-      await loadSession();
-      showBanner('Sample audio and runnable developer files added to your Memory Card.');
+  on('btnSeedDemoFiles', 'click', async () => {
+    try {
+      const res = await fetch('/api/files/seed-demo', { method: 'POST' });
+      if (res.ok) {
+        await loadSession();
+        showBanner('Sample audio and runnable developer files added to your Memory Card.');
+      }
+    } catch {
+      showBanner('Server is offline — run "npm start" in your terminal first.', true);
     }
   });
 
   // Empty Trash Button
-  const btnEmptyTrash = document.getElementById('btnEmptyTrash');
-  if (btnEmptyTrash) {
-    btnEmptyTrash.addEventListener('click', async () => {
-      const res = await fetch('/api/files/trash/empty', { method: 'DELETE' });
-      const data = await res.json();
-      if (res.ok) {
-        state.files = state.files.filter((f) => !f.isTrashed);
-        state.user = data.user;
-        state.breakdown = data.breakdown || state.breakdown;
-        renderCardHeader();
-        renderFiles();
-        showBanner(`Emptied Trash (${data.deletedCount} file(s) permanently purged).`);
-      }
-    });
-  }
+  on('btnEmptyTrash', 'click', async () => {
+    const res = await fetch('/api/files/trash/empty', { method: 'DELETE' });
+    const data = await res.json();
+    if (res.ok) {
+      state.files = state.files.filter((f) => !f.isTrashed);
+      state.user = data.user;
+      state.breakdown = data.breakdown || state.breakdown;
+      renderCardHeader();
+      renderFiles();
+      showBanner(`Emptied Trash (${data.deletedCount} file(s) permanently purged).`);
+    }
+  });
 
   // Refresh Security Audit Log
-  const btnRefreshSec = document.getElementById('btnRefreshSecurity');
-  if (btnRefreshSec) {
-    btnRefreshSec.addEventListener('click', async () => {
-      const res = await fetch('/api/security/audit');
-      const data = await res.json();
-      if (res.ok) {
-        state.auditLogs = data.auditLogs || [];
-        state.breakdown = data.breakdown || state.breakdown;
-        state.vaultUnlocked = Boolean(data.vaultUnlocked);
-        renderSecurityAudit();
-        renderStorageBreakdown();
-        showBanner('Security audit trail refreshed.');
-      }
-    });
-  }
+  on('btnRefreshSecurity', 'click', async () => {
+    const res = await fetch('/api/security/audit');
+    const data = await res.json();
+    if (res.ok) {
+      state.auditLogs = data.auditLogs || [];
+      state.breakdown = data.breakdown || state.breakdown;
+      state.vaultUnlocked = Boolean(data.vaultUnlocked);
+      renderSecurityAudit();
+      renderStorageBreakdown();
+      showBanner('Security audit trail refreshed.');
+    }
+  });
 
   // Create New Cloud File Modal
   const createFileModal = document.getElementById('createFileModal');
-  document
-    .getElementById('btnOpenCreateFileModal')
-    .addEventListener('click', () => createFileModal.showModal());
-  document
-    .getElementById('btnCloseCreateFileModal')
-    .addEventListener('click', () => createFileModal.close());
+  on('btnOpenCreateFileModal', 'click', () => createFileModal && createFileModal.showModal());
+  on('btnCloseCreateFileModal', 'click', () => createFileModal && createFileModal.close());
 
-  document.getElementById('createFileForm').addEventListener('submit', async (e) => {
+  on('createFileForm', 'submit', async (e) => {
     e.preventDefault();
     const name = document.getElementById('newFileNameInput').value;
     const folder = document.getElementById('newFileFolderSelect').value;
@@ -1129,18 +1151,16 @@ window.addEventListener('DOMContentLoaded', async () => {
       showBanner(data.error || 'Could not create file', true);
       return;
     }
-    createFileModal.close();
+    if (createFileModal) createFileModal.close();
     await loadSession();
     showBanner(`Created "${data.file.name}" directly on your Memory Card (0B local space used).`);
   });
 
   // Rename or Move File Modal
   const renameFileModal = document.getElementById('renameFileModal');
-  document
-    .getElementById('btnCloseRenameModal')
-    .addEventListener('click', () => renameFileModal.close());
+  on('btnCloseRenameModal', 'click', () => renameFileModal && renameFileModal.close());
 
-  document.getElementById('renameFileForm').addEventListener('submit', async (e) => {
+  on('renameFileForm', 'submit', async (e) => {
     e.preventDefault();
     const fileId = document.getElementById('renameFileIdInput').value;
     const name = document.getElementById('renameFileNameInput').value;
@@ -1159,7 +1179,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     const idx = state.files.findIndex((f) => f.id === fileId);
     if (idx >= 0) state.files[idx] = data.file;
     if (data.breakdown) state.breakdown = data.breakdown;
-    renameFileModal.close();
+    if (renameFileModal) renameFileModal.close();
     renderCardHeader();
     renderFiles();
     showBanner(`Updated "${data.file.name}" (${data.file.folder}).`);
@@ -1167,14 +1187,10 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   // Claim Shared Code Modal
   const claimShareModal = document.getElementById('claimShareModal');
-  document
-    .getElementById('btnOpenClaimShareModal')
-    .addEventListener('click', () => claimShareModal.showModal());
-  document
-    .getElementById('btnCloseClaimShareModal')
-    .addEventListener('click', () => claimShareModal.close());
+  on('btnOpenClaimShareModal', 'click', () => claimShareModal && claimShareModal.showModal());
+  on('btnCloseClaimShareModal', 'click', () => claimShareModal && claimShareModal.close());
 
-  document.getElementById('claimShareForm').addEventListener('submit', async (e) => {
+  on('claimShareForm', 'submit', async (e) => {
     e.preventDefault();
     const shareCode = document.getElementById('claimShareCodeInput').value;
     const res = await fetch('/api/files/claim-share', {
@@ -1190,7 +1206,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     state.user = data.user;
     state.files.unshift(data.file);
     if (data.breakdown) state.breakdown = data.breakdown;
-    claimShareModal.close();
+    if (claimShareModal) claimShareModal.close();
     renderCardHeader();
     renderFiles();
     showBanner(
@@ -1202,58 +1218,49 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   // Cloud Direct URL Fetch Modal (0 MB Phone Data!)
   const remoteFetchModal = document.getElementById('remoteFetchModal');
-  const btnOpenRemoteFetch = document.getElementById('btnOpenRemoteFetchModal');
-  if (btnOpenRemoteFetch && remoteFetchModal) {
-    btnOpenRemoteFetch.addEventListener('click', () => remoteFetchModal.showModal());
-  }
-  const btnCloseRemoteFetch = document.getElementById('btnCloseRemoteFetchModal');
-  if (btnCloseRemoteFetch && remoteFetchModal) {
-    btnCloseRemoteFetch.addEventListener('click', () => remoteFetchModal.close());
-  }
-  const remoteFetchForm = document.getElementById('remoteFetchForm');
-  if (remoteFetchForm) {
-    remoteFetchForm.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const submitBtn = document.getElementById('btnSubmitRemoteFetch');
-      const url = document.getElementById('remoteFetchUrlInput').value;
-      const name = document.getElementById('remoteFetchNameInput').value;
-      const folder = document.getElementById('remoteFetchFolderSelect').value;
+  on('btnOpenRemoteFetchModal', 'click', () => remoteFetchModal && remoteFetchModal.showModal());
+  on('btnCloseRemoteFetchModal', 'click', () => remoteFetchModal && remoteFetchModal.close());
+  on('remoteFetchForm', 'submit', async (e) => {
+    e.preventDefault();
+    const submitBtn = document.getElementById('btnSubmitRemoteFetch');
+    const url = document.getElementById('remoteFetchUrlInput').value;
+    const name = document.getElementById('remoteFetchNameInput').value;
+    const folder = document.getElementById('remoteFetchFolderSelect').value;
 
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Cloud Server Fetching at 1,000 Mbps...';
+    }
+
+    try {
+      const res = await fetch('/api/files/remote-fetch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url, name, folder })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showBanner(data.error || 'Cloud fetch failed', true);
+        return;
+      }
+      state.user = data.user;
+      state.files.unshift(data.file);
+      if (data.breakdown) state.breakdown = data.breakdown;
+      if (remoteFetchModal) remoteFetchModal.close();
+      e.target.reset();
+      renderCardHeader();
+      renderFiles();
+      showBanner(data.message);
+    } finally {
       if (submitBtn) {
-        submitBtn.disabled = true;
-        submitBtn.textContent = 'Cloud Server Fetching at 1,000 Mbps...';
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Fetch Directly to My Card (0 MB Phone Data)';
       }
-
-      try {
-        const res = await fetch('/api/files/remote-fetch', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url, name, folder })
-        });
-        const data = await res.json();
-        if (!res.ok) {
-          showBanner(data.error || 'Cloud fetch failed', true);
-          return;
-        }
-        state.user = data.user;
-        state.files.unshift(data.file);
-        if (data.breakdown) state.breakdown = data.breakdown;
-        remoteFetchModal.close();
-        remoteFetchForm.reset();
-        renderCardHeader();
-        renderFiles();
-        showBanner(data.message);
-      } finally {
-        if (submitBtn) {
-          submitBtn.disabled = false;
-          submitBtn.textContent = 'Fetch Directly to My Card (0 MB Phone Data)';
-        }
-      }
-    });
-  }
+    }
+  });
 
   // Search
-  document.getElementById('fileSearchInput').addEventListener('input', (e) => {
+  on('fileSearchInput', 'input', (e) => {
     state.searchQuery = e.target.value;
     if (state.activeView !== 'view-files') {
       switchView('view-files');
@@ -1263,7 +1270,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   });
 
   // File Card Actions (Stream/Studio, Share, Rename, Vault, Trash, Restore, Delete Forever)
-  document.getElementById('filesGrid').addEventListener('click', async (e) => {
+  on('filesGrid', 'click', async (e) => {
     const btn = e.target.closest('button[data-action]');
     if (!btn) return;
     const action = btn.dataset.action;
@@ -1286,7 +1293,7 @@ window.addEventListener('DOMContentLoaded', async () => {
       }
     } else if (action === 'rename') {
       const file = state.files.find((f) => f.id === fileId);
-      if (!file) return;
+      if (!file || !renameFileModal) return;
       document.getElementById('renameFileIdInput').value = file.id;
       document.getElementById('renameFileNameInput').value = file.name;
       document.getElementById('renameFileFolderSelect').value =
@@ -1350,7 +1357,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   });
 
   // Cloud Studio Run & Save Buttons
-  document.getElementById('btnRunCloudCode').addEventListener('click', async () => {
+  on('btnRunCloudCode', 'click', async () => {
     const textarea = document.getElementById('cloudStudioTextarea');
     const outBox = document.getElementById('cloudStudioOutputBox');
     if (!textarea || !outBox) return;
@@ -1371,7 +1378,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     outBox.textContent = `[Executed in ${data.durationMs}ms · 0B Local Disk]\n${data.output}`;
   });
 
-  document.getElementById('btnSaveCloudCode').addEventListener('click', async () => {
+  on('btnSaveCloudCode', 'click', async () => {
     const textarea = document.getElementById('cloudStudioTextarea');
     if (!textarea || !state.activeStudioFileId) return;
 
@@ -1395,16 +1402,15 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   // Stream Modal Close
   const streamModal = document.getElementById('streamModal');
-  document.getElementById('btnCloseStreamModal').addEventListener('click', () => {
-    document.getElementById('streamModalBody').innerHTML = '';
-    streamModal.close();
+  on('btnCloseStreamModal', 'click', () => {
+    const body = document.getElementById('streamModalBody');
+    if (body) body.innerHTML = '';
+    if (streamModal) streamModal.close();
   });
 
   // Mac Storage Doctor Actions
-  document
-    .getElementById('btnRunDoctorScan')
-    .addEventListener('click', () => runMacStorageDoctorScan());
-  document.getElementById('doctorHotspotsGrid').addEventListener('click', (e) => {
+  on('btnRunDoctorScan', 'click', () => runMacStorageDoctorScan());
+  on('doctorHotspotsGrid', 'click', (e) => {
     const btn = e.target.closest('button[data-copy-cmd]');
     if (!btn) return;
     navigator.clipboard.writeText(btn.dataset.copyCmd);
@@ -1412,16 +1418,16 @@ window.addEventListener('DOMContentLoaded', async () => {
   });
 
   // WebDAV Copy
-  document.getElementById('btnCopyWebdav').addEventListener('click', () => {
+  on('btnCopyWebdav', 'click', () => {
     navigator.clipboard.writeText(state.webdavUrl);
     showBanner('Personal WebDAV Drive Link copied to clipboard.');
   });
 
   // Upgrade Plan Selection
   const paymentModal = document.getElementById('paymentModal');
-  document.getElementById('plansGrid').addEventListener('click', (e) => {
+  on('plansGrid', 'click', (e) => {
     const btn = e.target.closest('button[data-upgrade-plan]');
-    if (!btn) return;
+    if (!btn || !paymentModal) return;
     const plan = state.plans[btn.dataset.upgradePlan];
     if (!plan) return;
 
@@ -1432,19 +1438,19 @@ window.addEventListener('DOMContentLoaded', async () => {
     paymentModal.showModal();
   });
 
-  document.getElementById('btnClosePayModal').addEventListener('click', () => paymentModal.close());
+  on('btnClosePayModal', 'click', () => paymentModal && paymentModal.close());
 
-  document.getElementById('btnCopyOpay').addEventListener('click', () => {
+  on('btnCopyOpay', 'click', () => {
     navigator.clipboard.writeText(document.getElementById('opayNumberText').textContent);
     showBanner('OPay account number copied.');
   });
 
-  document.getElementById('btnCopyPalmpay').addEventListener('click', () => {
+  on('btnCopyPalmpay', 'click', () => {
     navigator.clipboard.writeText(document.getElementById('palmpayNumberText').textContent);
     showBanner('PalmPay account number copied.');
   });
 
-  document.getElementById('paymentClaimForm').addEventListener('submit', async (e) => {
+  on('paymentClaimForm', 'submit', async (e) => {
     e.preventDefault();
     const planId = document.getElementById('paySelectedPlanId').value;
     const channel = document.getElementById('payChannelSelect').value;
@@ -1461,7 +1467,7 @@ window.addEventListener('DOMContentLoaded', async () => {
       return;
     }
 
-    paymentModal.close();
+    if (paymentModal) paymentModal.close();
     state.payments.unshift(data.payment);
     await fetchPendingClaims();
     renderPlansAndPayments();
@@ -1470,7 +1476,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     );
   });
 
-  document.getElementById('adminPendingClaimsList').addEventListener('click', async (e) => {
+  on('adminPendingClaimsList', 'click', async (e) => {
     const btn = e.target.closest('button[data-resolve-id]');
     if (!btn) return;
     await fetch(`/api/payments/${btn.dataset.resolveId}/resolve`, {
@@ -1482,23 +1488,21 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   // View Official Receipt Modal
   const receiptModal = document.getElementById('receiptModal');
-  document.getElementById('userPaymentsHistory').addEventListener('click', (e) => {
+  on('userPaymentsHistory', 'click', (e) => {
     const btn = e.target.closest('button[data-view-receipt]');
     if (!btn) return;
     const payment = state.payments.find((p) => p.id === btn.dataset.viewReceipt);
     if (payment) openReceiptModal(payment);
   });
-  document
-    .getElementById('btnCloseReceiptModal')
-    .addEventListener('click', () => receiptModal.close());
-  document.getElementById('btnPrintReceipt').addEventListener('click', () => window.print());
+  on('btnCloseReceiptModal', 'click', () => receiptModal && receiptModal.close());
+  on('btnPrintReceipt', 'click', () => window.print());
 
   // Lock Card Modal
   const lockModal = document.getElementById('lockCardModal');
-  document.getElementById('btnOpenLockModal').addEventListener('click', () => lockModal.showModal());
-  document.getElementById('btnCloseLockModal').addEventListener('click', () => lockModal.close());
+  on('btnOpenLockModal', 'click', () => lockModal && lockModal.showModal());
+  on('btnCloseLockModal', 'click', () => lockModal && lockModal.close());
 
-  document.getElementById('lockCardForm').addEventListener('submit', async (e) => {
+  on('lockCardForm', 'submit', async (e) => {
     e.preventDefault();
     const displayName = document.getElementById('lockNameInput').value;
     const phone = document.getElementById('lockPhoneInput').value;
@@ -1516,12 +1520,14 @@ window.addEventListener('DOMContentLoaded', async () => {
     }
     state.user = data.user;
     if (data.auditLogs) state.auditLogs = data.auditLogs;
-    lockModal.close();
+    if (lockModal) lockModal.close();
     renderCardHeader();
     renderSecurityAudit();
     if (data.recoveryKey) {
       navigator.clipboard.writeText(data.recoveryKey).catch(() => {});
-      showBanner(`${data.message} · Emergency Recovery Key (${data.recoveryKey}) copied to clipboard!`);
+      showBanner(
+        `${data.message} · Emergency Recovery Key (${data.recoveryKey}) copied to clipboard!`
+      );
     } else {
       showBanner(data.message);
     }
@@ -1529,14 +1535,10 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   // Restore Card Modal & PIN Recovery Key Reset
   const restoreModal = document.getElementById('restoreCardModal');
-  document
-    .getElementById('btnOpenRestoreModal')
-    .addEventListener('click', () => restoreModal.showModal());
-  document
-    .getElementById('btnCloseRestoreModal')
-    .addEventListener('click', () => restoreModal.close());
+  on('btnOpenRestoreModal', 'click', () => restoreModal && restoreModal.showModal());
+  on('btnCloseRestoreModal', 'click', () => restoreModal && restoreModal.close());
 
-  document.getElementById('restoreCardForm').addEventListener('submit', async (e) => {
+  on('restoreCardForm', 'submit', async (e) => {
     e.preventDefault();
     const phone = document.getElementById('restorePhoneInput').value;
     const pin = document.getElementById('restorePinInput').value;
@@ -1551,55 +1553,56 @@ window.addEventListener('DOMContentLoaded', async () => {
       showBanner(data.error || 'Invalid credentials', true);
       return;
     }
-    restoreModal.close();
+    if (restoreModal) restoreModal.close();
     await loadSession();
     showBanner(data.message);
   });
 
-  const btnTogglePinReset = document.getElementById('btnTogglePinReset');
   const resetPinForm = document.getElementById('resetPinForm');
-  if (btnTogglePinReset && resetPinForm) {
-    btnTogglePinReset.addEventListener('click', () => {
-      resetPinForm.classList.toggle('hidden');
-    });
+  on('btnTogglePinReset', 'click', () => {
+    if (resetPinForm) resetPinForm.classList.toggle('hidden');
+  });
 
-    resetPinForm.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const phone = document.getElementById('resetPhoneInput').value;
-      const recoveryKey = document.getElementById('resetRecoveryKeyInput').value;
-      const newPin = document.getElementById('resetNewPinInput').value;
+  on(resetPinForm, 'submit', async (e) => {
+    e.preventDefault();
+    const phone = document.getElementById('resetPhoneInput').value;
+    const recoveryKey = document.getElementById('resetRecoveryKeyInput').value;
+    const newPin = document.getElementById('resetNewPinInput').value;
 
-      const res = await fetch('/api/auth/reset-pin', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phone, recoveryKey, newPin })
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        showBanner(data.error || 'Invalid Recovery Key', true);
-        return;
-      }
-      if (data.recoveryKey) {
-        navigator.clipboard.writeText(data.recoveryKey).catch(() => {});
-      }
-      resetPinForm.reset();
-      resetPinForm.classList.add('hidden');
-      restoreModal.close();
-      await loadSession();
-      showBanner(
-        data.recoveryKey
-          ? `PIN reset! New Emergency Recovery Key (${data.recoveryKey}) copied to clipboard.`
-          : data.message
-      );
+    const res = await fetch('/api/auth/reset-pin', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone, recoveryKey, newPin })
     });
-  }
+    const data = await res.json();
+    if (!res.ok) {
+      showBanner(data.error || 'Invalid Recovery Key', true);
+      return;
+    }
+    if (data.recoveryKey) {
+      navigator.clipboard.writeText(data.recoveryKey).catch(() => {});
+    }
+    resetPinForm.reset();
+    resetPinForm.classList.add('hidden');
+    if (restoreModal) restoreModal.close();
+    await loadSession();
+    showBanner(
+      data.recoveryKey
+        ? `PIN reset! New Emergency Recovery Key (${data.recoveryKey}) copied to clipboard.`
+        : data.message
+    );
+  });
 
   // Local Wi-Fi P2P
-  document.getElementById('btnConnectP2P').addEventListener('click', connectP2PRoom);
+  on('btnConnectP2P', 'click', connectP2PRoom);
   const p2pFileInput = document.getElementById('p2pFileInput');
-  document.getElementById('btnBeamP2PFile').addEventListener('click', () => p2pFileInput.click());
-  p2pFileInput.addEventListener('change', (e) => {
+  on('btnBeamP2PFile', 'click', () => p2pFileInput && p2pFileInput.click());
+  on(p2pFileInput, 'change', (e) => {
     if (e.target.files[0]) beamLocalP2PFile(e.target.files[0]);
     p2pFileInput.value = '';
   });
+
+  // 2. Now load session data and connect live SSE stream
+  await loadSession();
+  connectLiveEvents();
 });
