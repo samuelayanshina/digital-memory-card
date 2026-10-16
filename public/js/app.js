@@ -1519,10 +1519,15 @@ window.addEventListener('DOMContentLoaded', async () => {
     lockModal.close();
     renderCardHeader();
     renderSecurityAudit();
-    showBanner(data.message);
+    if (data.recoveryKey) {
+      navigator.clipboard.writeText(data.recoveryKey).catch(() => {});
+      showBanner(`${data.message} · Emergency Recovery Key (${data.recoveryKey}) copied to clipboard!`);
+    } else {
+      showBanner(data.message);
+    }
   });
 
-  // Restore Card Modal
+  // Restore Card Modal & PIN Recovery Key Reset
   const restoreModal = document.getElementById('restoreCardModal');
   document
     .getElementById('btnOpenRestoreModal')
@@ -1550,6 +1555,44 @@ window.addEventListener('DOMContentLoaded', async () => {
     await loadSession();
     showBanner(data.message);
   });
+
+  const btnTogglePinReset = document.getElementById('btnTogglePinReset');
+  const resetPinForm = document.getElementById('resetPinForm');
+  if (btnTogglePinReset && resetPinForm) {
+    btnTogglePinReset.addEventListener('click', () => {
+      resetPinForm.classList.toggle('hidden');
+    });
+
+    resetPinForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const phone = document.getElementById('resetPhoneInput').value;
+      const recoveryKey = document.getElementById('resetRecoveryKeyInput').value;
+      const newPin = document.getElementById('resetNewPinInput').value;
+
+      const res = await fetch('/api/auth/reset-pin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone, recoveryKey, newPin })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showBanner(data.error || 'Invalid Recovery Key', true);
+        return;
+      }
+      if (data.recoveryKey) {
+        navigator.clipboard.writeText(data.recoveryKey).catch(() => {});
+      }
+      resetPinForm.reset();
+      resetPinForm.classList.add('hidden');
+      restoreModal.close();
+      await loadSession();
+      showBanner(
+        data.recoveryKey
+          ? `PIN reset! New Emergency Recovery Key (${data.recoveryKey}) copied to clipboard.`
+          : data.message
+      );
+    });
+  }
 
   // Local Wi-Fi P2P
   document.getElementById('btnConnectP2P').addEventListener('click', connectP2PRoom);

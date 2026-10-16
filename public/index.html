@@ -712,6 +712,43 @@
           Load Memory Card
         </button>
       </form>
+
+      <div style="margin-top: 1rem; padding-top: 0.85rem; border-top: 1px solid var(--border-hairline);">
+        <button type="button" id="btnTogglePinReset" class="btn btn-ghost btn-xs" style="width: 100%; justify-content: center;">
+          Forgot 4-Digit PIN? Reset with Recovery Key (₦0 SMS)
+        </button>
+        <form id="resetPinForm" class="dialog-form hidden" style="margin-top: 0.75rem;">
+          <div class="field">
+            <label for="resetPhoneInput">Linked Phone Number</label>
+            <input type="tel" id="resetPhoneInput" class="input" placeholder="08031234567" required />
+          </div>
+          <div class="field">
+            <label for="resetRecoveryKeyInput">Emergency Recovery Key</label>
+            <input
+              type="text"
+              id="resetRecoveryKeyInput"
+              class="input mono"
+              placeholder="NG-REC-XXXX-XXXX"
+              required
+            />
+          </div>
+          <div class="field">
+            <label for="resetNewPinInput">New 4-Digit PIN</label>
+            <input
+              type="password"
+              id="resetNewPinInput"
+              class="input mono"
+              placeholder="••••"
+              maxlength="4"
+              inputmode="numeric"
+              required
+            />
+          </div>
+          <button type="submit" class="btn btn-subtle-emerald btn-block">
+            Reset PIN & Generate New Recovery Key
+          </button>
+        </form>
+      </div>
     </div>
   </dialog>
 

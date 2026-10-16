@@ -84,8 +84,10 @@ export const APP_CONFIG = {
       accountName: process.env.PALMPAY_ACCOUNT_NAME || 'CARDNG DIGITAL STORAGE'
     }
   },
+  adminPin: process.env.ADMIN_PIN || '',
   telegram: {
     botToken: process.env.TELEGRAM_BOT_TOKEN || '',
-    adminChatId: process.env.TELEGRAM_ADMIN_CHAT_ID || ''
+    adminChatId: process.env.TELEGRAM_ADMIN_CHAT_ID || '',
+    webhookSecret: process.env.TELEGRAM_WEBHOOK_SECRET || ''
   }
 };

@@ -148,14 +148,47 @@ export const db = {
       throw new Error('This phone number is already linked to another Memory Card. Use "Switch / Restore Card" to log in.');
     }
 
+    const recA = crypto.randomBytes(2).toString('hex').toUpperCase();
+    const recB = crypto.randomBytes(2).toString('hex').toUpperCase();
+    const recoveryKey = `NG-REC-${recA}-${recB}`;
+
     user.phone = normalizedPhone;
     user.pinHash = hashPin(pin, normalizedPhone);
+    user.recoveryKeyHash = hashPin(recoveryKey, normalizedPhone);
     user.displayName = displayName?.trim() || `Card ${normalizedPhone.slice(-4)}`;
     user.isLockedToPhone = true;
     user.updatedAt = new Date().toISOString();
 
     persistDatabase();
-    return user;
+    return { user, recoveryKey };
+  },
+
+  resetPinWithRecoveryKey(phone, recoveryKey, newPin) {
+    const normalizedPhone = db.normalizePhone(phone);
+    const user = db.getUserByPhone(normalizedPhone);
+    if (!user || !user.recoveryKeyHash) {
+      return null;
+    }
+    if (!/^\d{4}$/.test(String(newPin))) {
+      throw new Error('New PIN must be exactly 4 digits');
+    }
+    const cleanKey = String(recoveryKey || '').trim().toUpperCase();
+    const candidateHash = hashPin(cleanKey, normalizedPhone);
+    const valid = crypto.timingSafeEqual(
+      Buffer.from(user.recoveryKeyHash, 'hex'),
+      Buffer.from(candidateHash, 'hex')
+    );
+    if (!valid) return null;
+
+    const recA = crypto.randomBytes(2).toString('hex').toUpperCase();
+    const recB = crypto.randomBytes(2).toString('hex').toUpperCase();
+    const nextRecoveryKey = `NG-REC-${recA}-${recB}`;
+
+    user.pinHash = hashPin(newPin, normalizedPhone);
+    user.recoveryKeyHash = hashPin(nextRecoveryKey, normalizedPhone);
+    user.updatedAt = new Date().toISOString();
+    persistDatabase();
+    return { user, recoveryKey: nextRecoveryKey };
   },
 
   authenticatePhoneAndPin(phone, pin) {

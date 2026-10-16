@@ -584,5 +584,83 @@ test('12. On-Device GZIP Data-Saver Upload (80%+ Mobile Data Saved) & SSRF-Safe 
   assert.equal(ssrfRes.status, 400);
 });
 
+test('13. Cryptographic PIN Recovery Key Reset (₦0 SMS) & Real Telegram 1-Tap Webhook Callback', async () => {
+  const sRes = await dispatch('/api/session');
+  const token = (await sRes.json()).user.sessionToken;
+  const randomPhone = `081${Math.floor(10000000 + Math.random() * 89999999)}`;
 
+  // 1. Lock Card and receive Emergency Recovery Key (NG-REC-XXXX-XXXX)
+  const lockRes = await dispatch('/api/auth/lock', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-card-token': token
+    },
+    body: {
+      displayName: 'Ngozi Founder',
+      phone: randomPhone,
+      pin: '1357'
+    }
+  });
+  assert.equal(lockRes.status, 200);
+  const lockData = await lockRes.json();
+  assert.ok(lockData.recoveryKey?.startsWith('NG-REC-'));
 
+  // 2. Reset forgotten PIN using Emergency Recovery Key -> rotates recoveryKey
+  const resetRes = await dispatch('/api/auth/reset-pin', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: {
+      phone: randomPhone,
+      recoveryKey: lockData.recoveryKey,
+      newPin: '8642'
+    }
+  });
+  assert.equal(resetRes.status, 200);
+  const resetData = await resetRes.json();
+  assert.ok(resetData.recoveryKey?.startsWith('NG-REC-'));
+  assert.notEqual(resetData.recoveryKey, lockData.recoveryKey);
+
+  // 3. Reusing the old recovery key must fail (one-time rotation)
+  const replayRes = await dispatch('/api/auth/reset-pin', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: {
+      phone: randomPhone,
+      recoveryKey: lockData.recoveryKey,
+      newPin: '1111'
+    }
+  });
+  assert.equal(replayRes.status, 401);
+
+  // 4. Submit an OPay transfer claim and approve via real Telegram Bot callback_query webhook
+  const claimRes = await dispatch('/api/payments/claim', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-card-token': token
+    },
+    body: {
+      planId: 'pro',
+      channel: 'PalmPay',
+      senderName: 'Ngozi Founder'
+    }
+  });
+  assert.equal(claimRes.status, 201);
+  const claimId = (await claimRes.json()).payment.id;
+
+  const tgWebhookRes = await dispatch('/api/telegram/webhook', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: {
+      callback_query: {
+        id: 'cbq_test_991',
+        data: `approve:${claimId}`
+      }
+    }
+  });
+  assert.equal(tgWebhookRes.status, 200);
+  const tgData = await tgWebhookRes.json();
+  assert.equal(tgData.payment.status, 'APPROVED');
+  assert.equal(tgData.user.planId, 'pro');
+});

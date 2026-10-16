@@ -233,21 +233,57 @@ export function createAppServer() {
         }
         const user = getOrProvisionUser(req, res, true);
         const body = await readJsonBody(req);
-        const updatedUser = db.lockUserToPhone(user.id, {
+        const { user: updatedUser, recoveryKey } = db.lockUserToPhone(user.id, {
           phone: body.phone,
           pin: body.pin,
           displayName: body.displayName
         });
         db.appendAuditLog(user.id, {
           action: 'CARD_LOCKED_TO_PHONE',
-          detail: `Card ${updatedUser.cardSerial} permanently bound to ${updatedUser.phone} with 4-digit PIN`,
+          detail: `Card ${updatedUser.cardSerial} permanently bound to ${updatedUser.phone} with 4-digit PIN & Recovery Key`,
           severity: 'SUCCESS',
           ip: clientIp
         });
         return sendJson(res, 200, {
           user: sanitizeUserForClient(updatedUser),
+          recoveryKey,
           auditLogs: db.getUserAuditLogs(user.id),
-          message: 'Memory Card permanently locked to your phone number and 4-digit PIN!'
+          message: `Memory Card locked! Save your Emergency Recovery Key: ${recoveryKey}`
+        });
+      }
+
+      // 3b. POST /api/auth/reset-pin — Reset Forgotten 4-Digit PIN via Free Recovery Key (₦0 SMS Cost)
+      if (pathname === '/api/auth/reset-pin' && req.method === 'POST') {
+        const rl = checkRateLimit(`resetpin:${clientIp}`, 6, 15 * 60 * 1000);
+        if (!rl.allowed) {
+          return sendJson(res, 429, {
+            error: `Too many recovery attempts. Wait ${rl.retryAfterSec}s.`
+          });
+        }
+        const body = await readJsonBody(req);
+        const resetResult = db.resetPinWithRecoveryKey(
+          body.phone,
+          body.recoveryKey,
+          body.newPin
+        );
+        if (!resetResult) {
+          return sendJson(res, 401, {
+            error: 'Invalid phone number or Recovery Key (e.g. NG-REC-XXXX-XXXX).'
+          });
+        }
+        setSessionCookie(res, resetResult.user.sessionToken);
+        db.appendAuditLog(resetResult.user.id, {
+          action: 'PIN_RESET_VIA_RECOVERY_KEY',
+          detail: `4-digit PIN reset using Emergency Recovery Key for ${resetResult.user.cardSerial}`,
+          severity: 'WARN',
+          ip: clientIp
+        });
+        return sendJson(res, 200, {
+          user: sanitizeUserForClient(resetResult.user),
+          recoveryKey: resetResult.recoveryKey,
+          nextRecoveryKey: resetResult.recoveryKey,
+          auditLogs: db.getUserAuditLogs(resetResult.user.id),
+          message: `PIN reset successful! Your new Emergency Recovery Key is: ${resetResult.recoveryKey}`
         });
       }
 
@@ -868,6 +904,12 @@ export function createAppServer() {
       if (resolveMatch && req.method === 'POST') {
         const paymentId = resolveMatch[1];
         const body = await readJsonBody(req);
+        if (APP_CONFIG.adminPin) {
+          const providedAdminPin = req.headers['x-admin-pin'] || body.adminPin || '';
+          if (String(providedAdminPin) !== String(APP_CONFIG.adminPin)) {
+            return sendJson(res, 403, { error: 'Admin PIN required to resolve payments in production.' });
+          }
+        }
         const action = body.action === 'REJECT' ? 'REJECT' : 'APPROVE';
         const { payment, user } = resolvePaymentAndNotifyUser(paymentId, action);
         if (user) {
@@ -885,6 +927,34 @@ export function createAppServer() {
           payment,
           user: sanitizeUserForClient(user)
         });
+      }
+
+      // 13b. POST /api/telegram/webhook — Real Telegram Bot Callback Webhook (1-Tap Mobile Approval)
+      if (pathname === '/api/telegram/webhook' && req.method === 'POST') {
+        if (APP_CONFIG.telegram.webhookSecret) {
+          const secretHdr = req.headers['x-telegram-bot-api-secret-token'];
+          if (secretHdr !== APP_CONFIG.telegram.webhookSecret) {
+            return sendJson(res, 403, { error: 'Invalid Telegram webhook secret' });
+          }
+        }
+        const update = await readJsonBody(req);
+        const callbackData = update?.callback_query?.data || '';
+        const [rawAction, paymentId] = String(callbackData).split(':');
+        const action = String(rawAction || '').toUpperCase();
+        if ((action === 'APPROVE' || action === 'REJECT') && paymentId) {
+          const { payment, user } = resolvePaymentAndNotifyUser(paymentId, action);
+          if (user) {
+            db.appendAuditLog(user.id, {
+              action:
+                action === 'APPROVE' ? 'STORAGE_UPGRADE_APPROVED' : 'STORAGE_UPGRADE_REJECTED',
+              detail: `Telegram Bot ${action.toLowerCase()}d ${payment.reference}`,
+              severity: action === 'APPROVE' ? 'SUCCESS' : 'WARN',
+              ip: 'telegram-bot'
+            });
+          }
+          return sendJson(res, 200, { ok: true, payment, user: sanitizeUserForClient(user) });
+        }
+        return sendJson(res, 200, { ok: true, ignored: true });
       }
 
       // 14. GET /api/payments/pending — List Pending Claims for Admin / Telegram Simulator
@@ -936,8 +1006,10 @@ export function createAppServer() {
       // Fallback SPA / 404
       sendJson(res, 404, { error: 'Not found' });
     } catch (err) {
-      console.error('[Server Error]:', err);
       const status = err.message?.startsWith('QUOTA_EXCEEDED') ? 507 : 400;
+      if (status >= 500 && !err.message?.startsWith('QUOTA_EXCEEDED')) {
+        console.error('[Server Error]:', err);
+      }
       if (!res.headersSent) {
         sendJson(res, status, { error: err.message || 'Internal Server Error' });
       }
