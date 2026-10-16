@@ -1,0 +1,369 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import crypto from 'node:crypto';
+import { STORAGE_PLANS, APP_CONFIG } from '../config/plans.mjs';
+
+const DATA_DIR = path.resolve(APP_CONFIG.storageRoot, 'db');
+const DB_FILE = path.join(DATA_DIR, 'cardng_state.json');
+
+fs.mkdirSync(DATA_DIR, { recursive: true });
+
+const defaultState = {
+  users: {},       // id -> User
+  blobs: {},       // sha256 -> { sha256, sizeBytes, mimeType, refCount, createdAt }
+  files: {},       // fileId -> FileRecord
+  payments: {},    // paymentId -> PaymentRecord
+  stats: {
+    totalPhysicalBytes: 0,
+    totalVirtualBytes: 0,
+    totalDeduplicatedBytesSaved: 0,
+    totalInstantUploadsCount: 0
+  }
+};
+
+let state = structuredClone(defaultState);
+
+function loadDatabase() {
+  try {
+    if (fs.existsSync(DB_FILE)) {
+      const raw = fs.readFileSync(DB_FILE, 'utf-8');
+      const parsed = JSON.parse(raw);
+      state = {
+        ...structuredClone(defaultState),
+        ...parsed,
+        stats: { ...defaultState.stats, ...(parsed.stats || {}) }
+      };
+    }
+  } catch (err) {
+    console.error('[DB] Failed to load existing state, initializing clean DB:', err.message);
+  }
+}
+
+let saveQueued = false;
+function persistDatabase() {
+  if (saveQueued) return;
+  saveQueued = true;
+  setImmediate(() => {
+    saveQueued = false;
+    try {
+      const tmpFile = `${DB_FILE}.tmp`;
+      fs.writeFileSync(tmpFile, JSON.stringify(state, null, 2), 'utf-8');
+      fs.renameSync(tmpFile, DB_FILE);
+    } catch (err) {
+      console.error('[DB] Atomic write error:', err.message);
+    }
+  });
+}
+
+loadDatabase();
+
+export function hashPin(pin, salt = APP_CONFIG.appSecret) {
+  return crypto.scryptSync(String(pin), salt, 32).toString('hex');
+}
+
+function generateCardSerial() {
+  const part1 = crypto.randomBytes(2).toString('hex').toUpperCase();
+  const part2 = crypto.randomBytes(2).toString('hex').toUpperCase();
+  return `NG-SD-${part1}-${part2}`;
+}
+
+export const db = {
+  getStats() {
+    const usersCount = Object.keys(state.users).length;
+    const filesCount = Object.keys(state.files).length;
+    const blobsCount = Object.keys(state.blobs).length;
+    return {
+      ...state.stats,
+      usersCount,
+      filesCount,
+      blobsCount
+    };
+  },
+
+  createAnonymousUser() {
+    const id = `usr_${crypto.randomBytes(8).toString('hex')}`;
+    const sessionToken = crypto.randomBytes(24).toString('hex');
+    const plan = STORAGE_PLANS.free;
+    const user = {
+      id,
+      cardSerial: generateCardSerial(),
+      sessionToken,
+      phone: null,
+      displayName: 'Guest Cardholder',
+      pinHash: null,
+      isLockedToPhone: false,
+      planId: plan.id,
+      planName: plan.name,
+      quotaBytes: plan.quotaBytes,
+      usedBytes: 0,
+      savedDataBytes: 0,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    state.users[id] = user;
+    persistDatabase();
+    return user;
+  },
+
+  getUserById(userId) {
+    return state.users[userId] || null;
+  },
+
+  getUserByToken(token) {
+    if (!token) return null;
+    return Object.values(state.users).find((u) => u.sessionToken === token) || null;
+  },
+
+  getUserByPhone(phone) {
+    const normalized = db.normalizePhone(phone);
+    if (!normalized) return null;
+    return Object.values(state.users).find((u) => u.phone === normalized) || null;
+  },
+
+  normalizePhone(phone) {
+    if (!phone) return '';
+    let cleaned = String(phone).replace(/\D/g, '');
+    if (cleaned.startsWith('234') && cleaned.length === 13) {
+      cleaned = '0' + cleaned.slice(3);
+    }
+    return cleaned;
+  },
+
+  lockUserToPhone(userId, { phone, pin, displayName }) {
+    const user = state.users[userId];
+    if (!user) throw new Error('User not found');
+
+    const normalizedPhone = db.normalizePhone(phone);
+    if (normalizedPhone.length < 10 || normalizedPhone.length > 11) {
+      throw new Error('Please enter a valid Nigerian phone number (e.g. 08031234567)');
+    }
+    if (!/^\d{4}$/.test(String(pin))) {
+      throw new Error('PIN must be exactly 4 digits');
+    }
+
+    const existingOwner = db.getUserByPhone(normalizedPhone);
+    if (existingOwner && existingOwner.id !== userId) {
+      throw new Error('This phone number is already linked to another Memory Card. Use "Switch / Restore Card" to log in.');
+    }
+
+    user.phone = normalizedPhone;
+    user.pinHash = hashPin(pin, normalizedPhone);
+    user.displayName = displayName?.trim() || `Card ${normalizedPhone.slice(-4)}`;
+    user.isLockedToPhone = true;
+    user.updatedAt = new Date().toISOString();
+
+    persistDatabase();
+    return user;
+  },
+
+  authenticatePhoneAndPin(phone, pin) {
+    const normalizedPhone = db.normalizePhone(phone);
+    const user = db.getUserByPhone(normalizedPhone);
+    if (!user || !user.pinHash) {
+      return null;
+    }
+    const candidateHash = hashPin(pin, normalizedPhone);
+    const valid = crypto.timingSafeEqual(
+      Buffer.from(user.pinHash, 'hex'),
+      Buffer.from(candidateHash, 'hex')
+    );
+    if (!valid) return null;
+    return user;
+  },
+
+  verifyUserPin(userId, pin) {
+    const user = state.users[userId];
+    if (!user) return false;
+    if (!user.pinHash) {
+      // Default demo PIN if user hasn't set one yet is 0000
+      return String(pin) === '0000';
+    }
+    const candidateHash = hashPin(pin, user.phone || APP_CONFIG.appSecret);
+    return crypto.timingSafeEqual(
+      Buffer.from(user.pinHash, 'hex'),
+      Buffer.from(candidateHash, 'hex')
+    );
+  },
+
+  getBlob(sha256) {
+    return state.blobs[sha256] || null;
+  },
+
+  registerOrIncrementBlob({ sha256, sizeBytes, mimeType }) {
+    const existing = state.blobs[sha256];
+    if (existing) {
+      existing.refCount += 1;
+      state.stats.totalVirtualBytes += sizeBytes;
+      state.stats.totalDeduplicatedBytesSaved += sizeBytes;
+      state.stats.totalInstantUploadsCount += 1;
+      persistDatabase();
+      return { blob: existing, deduplicated: true };
+    }
+
+    const blob = {
+      sha256,
+      sizeBytes,
+      mimeType: mimeType || 'application/octet-stream',
+      refCount: 1,
+      createdAt: new Date().toISOString()
+    };
+    state.blobs[sha256] = blob;
+    state.stats.totalPhysicalBytes += sizeBytes;
+    state.stats.totalVirtualBytes += sizeBytes;
+    persistDatabase();
+    return { blob, deduplicated: false };
+  },
+
+  createFileRecord({ userId, name, folder = 'All Files', sha256, sizeBytes, mimeType, isVaultLocked = false, deduplicated = false }) {
+    const user = state.users[userId];
+    if (!user) throw new Error('User not found');
+
+    const id = `fil_${crypto.randomBytes(8).toString('hex')}`;
+    const record = {
+      id,
+      userId,
+      name: path.basename(name),
+      folder,
+      sha256,
+      sizeBytes: Number(sizeBytes),
+      mimeType: mimeType || 'application/octet-stream',
+      isVaultLocked: Boolean(isVaultLocked),
+      deduplicated: Boolean(deduplicated),
+      safeToDeleteVerified: true,
+      createdAt: new Date().toISOString()
+    };
+
+    state.files[id] = record;
+    user.usedBytes += Number(sizeBytes);
+    if (deduplicated) {
+      user.savedDataBytes = (user.savedDataBytes || 0) + Number(sizeBytes);
+    }
+    user.updatedAt = new Date().toISOString();
+    persistDatabase();
+    return record;
+  },
+
+  getUserFiles(userId) {
+    return Object.values(state.files)
+      .filter((f) => f.userId === userId)
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  },
+
+  getFileById(fileId) {
+    return state.files[fileId] || null;
+  },
+
+  toggleFileVault(fileId, userId, isVaultLocked) {
+    const file = state.files[fileId];
+    if (!file || file.userId !== userId) return null;
+    file.isVaultLocked = Boolean(isVaultLocked);
+    if (file.isVaultLocked && file.folder !== 'Private Vault') {
+      file.folder = 'Private Vault';
+    }
+    persistDatabase();
+    return file;
+  },
+
+  deleteFileRecord(fileId, userId) {
+    const file = state.files[fileId];
+    if (!file || file.userId !== userId) return null;
+
+    const user = state.users[userId];
+    if (user) {
+      user.usedBytes = Math.max(0, user.usedBytes - file.sizeBytes);
+      user.updatedAt = new Date().toISOString();
+    }
+
+    delete state.files[fileId];
+    state.stats.totalVirtualBytes = Math.max(0, state.stats.totalVirtualBytes - file.sizeBytes);
+
+    let shouldDeletePhysicalBlob = false;
+    const blob = state.blobs[file.sha256];
+    if (blob) {
+      blob.refCount = Math.max(0, blob.refCount - 1);
+      if (blob.refCount === 0) {
+        delete state.blobs[file.sha256];
+        state.stats.totalPhysicalBytes = Math.max(0, state.stats.totalPhysicalBytes - file.sizeBytes);
+        shouldDeletePhysicalBlob = true;
+      }
+    }
+
+    persistDatabase();
+    return { deletedFile: file, shouldDeletePhysicalBlob };
+  },
+
+  createPaymentClaim({ userId, planId, channel = 'OPay', senderName = '' }) {
+    const user = state.users[userId];
+    if (!user) throw new Error('User not found');
+    const plan = STORAGE_PLANS[planId];
+    if (!plan || plan.priceNaira <= 0) throw new Error('Invalid upgrade plan selected');
+
+    const id = `pay_${crypto.randomBytes(6).toString('hex')}`;
+    const refNumber = Math.floor(1000 + Math.random() * 9000);
+    const reference = `MC-${refNumber}`;
+
+    const payment = {
+      id,
+      reference,
+      userId,
+      cardSerial: user.cardSerial,
+      userPhone: user.phone || 'Unlinked Guest',
+      planId: plan.id,
+      planName: plan.name,
+      quotaLabel: plan.quotaLabel,
+      amountNaira: plan.priceNaira,
+      channel,
+      senderName: senderName.trim() || user.displayName,
+      status: 'PENDING',
+      receiptNumber: null,
+      createdAt: new Date().toISOString(),
+      resolvedAt: null
+    };
+
+    state.payments[id] = payment;
+    persistDatabase();
+    return payment;
+  },
+
+  resolvePayment(paymentId, action = 'APPROVE') {
+    const payment = state.payments[paymentId];
+    if (!payment) throw new Error('Payment claim not found');
+    if (payment.status !== 'PENDING') return payment;
+
+    const user = state.users[payment.userId];
+    const plan = STORAGE_PLANS[payment.planId];
+
+    if (action === 'APPROVE' && user && plan) {
+      payment.status = 'APPROVED';
+      payment.resolvedAt = new Date().toISOString();
+      payment.receiptNumber = `NG-RCPT-${Date.now().toString().slice(-6)}`;
+
+      user.planId = plan.id;
+      user.planName = plan.name;
+      user.quotaBytes = plan.quotaBytes;
+      user.updatedAt = new Date().toISOString();
+    } else {
+      payment.status = 'REJECTED';
+      payment.resolvedAt = new Date().toISOString();
+    }
+
+    persistDatabase();
+    return payment;
+  },
+
+  getUserPayments(userId) {
+    return Object.values(state.payments)
+      .filter((p) => p.userId === userId)
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  },
+
+  getPendingPayments() {
+    return Object.values(state.payments)
+      .filter((p) => p.status === 'PENDING')
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  },
+
+  getPaymentById(paymentId) {
+    return state.payments[paymentId] || null;
+  }
+};

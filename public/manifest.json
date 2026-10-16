@@ -1,0 +1,17 @@
+{
+  "name": "CardNG — Digital Memory Card",
+  "short_name": "CardNG",
+  "description": "Zero-Install Expandable Digital Memory Card for Mac, iPhone, Android & Windows.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#ffffff",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23059669'/><path d='M28 18 H62 L76 32 V82 H28 Z' fill='%23ffffff'/><rect x='36' y='24' width='5' height='12' rx='2' fill='%23f59e0b'/><rect x='45' y='24' width='5' height='12' rx='2' fill='%23f59e0b'/><rect x='54' y='24' width='5' height='12' rx='2' fill='%23f59e0b'/></svg>",
+      "sizes": "192x192",
+      "type": "image/svg+xml"
+    }
+  ]
+}

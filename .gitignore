@@ -1,0 +1,13 @@
+# Local storage blobs & state database
+storage/
+data/
+
+# Environment secrets
+.env
+.env.local
+
+# OS & Editor files
+.DS_Store
+._*
+*.log
+node_modules/

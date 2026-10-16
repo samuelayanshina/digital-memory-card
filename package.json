@@ -1,0 +1,11 @@
+{
+  "name": "digital-memory-card",
+  "version": "1.0.0",
+  "description": "Zero-Install Digital Memory Card with SHA-256 Deduplication, HTTP 206 Streaming, WebDAV Finder/Explorer Mount, Local P2P Zero-Data Transfer, and Instant OPay/Telegram Verification",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.mjs",
+    "dev": "node --watch src/server.mjs",
+    "test": "node --test test/server.test.mjs"
+  }
+}

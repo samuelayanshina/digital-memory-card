@@ -1,0 +1,566 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0" />
+  <meta name="theme-color" content="#ffffff" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <title>CardNG — Digital Memory Card</title>
+  <link rel="manifest" href="/manifest.json" />
+  <link rel="stylesheet" href="/css/styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <!-- Left Sidebar (Apple Finder / Google Drive Architecture) -->
+    <aside class="sidebar">
+      <div class="sidebar-top">
+        <!-- Brand Header -->
+        <div class="brand">
+          <div class="brand-logo" aria-hidden="true">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M6 2h9l5 5v13a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z"/>
+              <line x1="8" y1="6" x2="8" y2="10"/>
+              <line x1="11" y1="6" x2="11" y2="10"/>
+              <line x1="14" y1="6" x2="14" y2="10"/>
+            </svg>
+          </div>
+          <div class="brand-text">
+            <span class="brand-name">CardNG</span>
+            <span class="brand-tag">Digital Memory Card</span>
+          </div>
+        </div>
+
+        <!-- Primary Action: Offload Files -->
+        <button type="button" id="btnPrimaryUpload" class="btn btn-primary btn-upload-main">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 5v14M5 12h14"/>
+          </svg>
+          <span>Offload Files</span>
+        </button>
+
+        <!-- Library Navigation -->
+        <div class="nav-group">
+          <div class="nav-group-label">Memory Card</div>
+          <nav class="nav-list" id="folderNavList">
+            <button class="nav-item active" data-view="view-files" data-folder="ALL">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/>
+              </svg>
+              <span>All Files</span>
+              <span class="nav-badge" id="fileCountPill">0</span>
+            </button>
+
+            <button class="nav-item" data-view="view-files" data-folder="Movies & Media">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <polygon points="5 3 19 12 5 21 5 3"/>
+              </svg>
+              <span>Movies & Media</span>
+            </button>
+
+            <button class="nav-item" data-view="view-files" data-folder="Photos">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/>
+              </svg>
+              <span>Photos</span>
+            </button>
+
+            <button class="nav-item" data-view="view-files" data-folder="Dev & Code">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>
+              </svg>
+              <span>Developer & Code</span>
+            </button>
+
+            <button class="nav-item" data-view="view-files" data-folder="Private Vault">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+              </svg>
+              <span>Private Vault</span>
+            </button>
+          </nav>
+        </div>
+
+        <!-- Connectivity & Expansion -->
+        <div class="nav-group">
+          <div class="nav-group-label">Connectivity</div>
+          <nav class="nav-list" id="toolNavList">
+            <button class="nav-item" data-view="view-mount">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
+              </svg>
+              <span>Mount as Drive</span>
+            </button>
+
+            <button class="nav-item" data-view="view-p2p">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/>
+              </svg>
+              <span>Local Wi-Fi Beam</span>
+            </button>
+
+            <button class="nav-item" data-view="view-upgrade">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="1" y="4" width="22" height="16" rx="2" ry="2"/><line x1="1" y1="10" x2="23" y2="10"/>
+              </svg>
+              <span>Storage Plans</span>
+            </button>
+          </nav>
+        </div>
+      </div>
+
+      <!-- Bottom Tactile Hardware Card Widget -->
+      <div class="sidebar-card-widget">
+        <div class="widget-top">
+          <div>
+            <span class="widget-plan-tag" id="cardPlanBadge">FREE STARTER</span>
+            <div class="widget-capacity" id="cardCapacityTitle">5 GB</div>
+          </div>
+          <div class="gold-contacts" aria-hidden="true">
+            <span></span><span></span><span></span><span></span>
+          </div>
+        </div>
+
+        <div class="widget-meter">
+          <div class="widget-meter-bar">
+            <div class="widget-meter-fill" id="storageProgressBar" style="width: 1%"></div>
+          </div>
+          <div class="widget-meter-labels">
+            <span id="usedSpaceText">0 B used</span>
+            <span id="freeSpaceText">5 GB free</span>
+          </div>
+        </div>
+
+        <div class="widget-serial-row">
+          <span class="serial-code" id="cardSerialText">NG-SD-....</span>
+          <span class="zero-local-tag">0B on device</span>
+        </div>
+
+        <button type="button" id="btnSidebarUpgrade" class="btn btn-subtle-emerald btn-block btn-sm">
+          Expand Storage · From ₦250
+        </button>
+      </div>
+    </aside>
+
+    <!-- Main Workspace Area -->
+    <div class="workspace">
+      <!-- Clean Top Header Bar -->
+      <header class="workspace-header">
+        <div class="search-container">
+          <svg class="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+          </svg>
+          <input type="search" id="fileSearchInput" class="search-input" placeholder="Search files, movies, or code..." />
+        </div>
+
+        <div class="header-actions">
+          <div class="card-protection-status" id="cardOwnerStatusText">
+            <span class="status-dot"></span>
+            <span>Guest Session</span>
+          </div>
+          <button type="button" id="btnOpenLockModal" class="btn btn-outline btn-sm">
+            <span id="lockStatusBtnText">Lock to Phone + PIN</span>
+          </button>
+          <button type="button" id="btnOpenRestoreModal" class="btn btn-ghost btn-sm">
+            Switch Card
+          </button>
+        </div>
+      </header>
+
+      <!-- Live Notification Banner -->
+      <div id="liveBanner" class="live-toast hidden" role="status" aria-live="polite"></div>
+
+      <!-- VIEW 1: FILES WORKSPACE -->
+      <main id="view-files" class="view-section active">
+        <!-- Focused Telemetry Strip -->
+        <section class="telemetry-strip">
+          <div class="telemetry-item">
+            <span class="telemetry-label">Active Folder</span>
+            <strong class="telemetry-val" id="currentFolderHeading">All Files</strong>
+          </div>
+          <div class="telemetry-divider"></div>
+          <div class="telemetry-item">
+            <span class="telemetry-label">Local Mac / Phone Disk Used</span>
+            <strong class="telemetry-val text-emerald">0 Bytes (Streamed)</strong>
+          </div>
+          <div class="telemetry-divider"></div>
+          <div class="telemetry-item">
+            <span class="telemetry-label">Data Saved via Deduplication</span>
+            <strong class="telemetry-val" id="savedDataMetric">0 B</strong>
+          </div>
+          <div class="telemetry-actions">
+            <button type="button" id="btnSeedDemoFiles" class="btn btn-ghost btn-xs">
+              Load Demo Files
+            </button>
+          </div>
+        </section>
+
+        <!-- Sleek Compact Upload Dropbar -->
+        <section class="upload-bar-wrap">
+          <div id="dropZone" class="upload-dropbar" tabindex="0">
+            <input type="file" id="fileInput" multiple hidden />
+            <div class="dropbar-left">
+              <div class="dropbar-icon">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+                </svg>
+              </div>
+              <div>
+                <div class="dropbar-title">Drop files here to offload from your device, or <span class="link-highlight" id="btnPickFiles">browse files</span></div>
+                <div class="dropbar-subtitle">SHA-256 verified before local deletion • Shared files upload in 0.1s using 0 MB data</div>
+              </div>
+            </div>
+
+            <div class="dropbar-controls" onclick="event.stopPropagation()">
+              <select id="uploadFolderSelect" class="compact-select" aria-label="Destination folder">
+                <option value="Movies & Media">Folder: Movies & Media</option>
+                <option value="Photos">Folder: Photos</option>
+                <option value="Dev & Code">Folder: Dev & Code</option>
+                <option value="Documents">Folder: Documents</option>
+                <option value="Private Vault">Folder: Private Vault</option>
+              </select>
+
+              <label class="compact-check" title="Block cellular uploads">
+                <input type="checkbox" id="wifiOnlyToggle" />
+                <span>Wi-Fi Only</span>
+              </label>
+
+              <label class="compact-check" title="Require 4-digit PIN to open">
+                <input type="checkbox" id="vaultLockToggle" />
+                <span>Vault Lock</span>
+              </label>
+            </div>
+          </div>
+
+          <!-- Active Upload Progress -->
+          <div id="uploadStatusBox" class="upload-progress-card hidden">
+            <div class="upload-progress-row">
+              <span id="uploadStatusText">Scanning file fingerprint...</span>
+              <strong id="uploadPercentText">0%</strong>
+            </div>
+            <div class="widget-meter-bar">
+              <div id="uploadProgressBar" class="widget-meter-fill" style="width: 0%"></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- File List / Grid -->
+        <section id="filesGrid" class="files-container"></section>
+      </main>
+
+      <!-- VIEW 2: MOUNT AS DRIVE (MAC FINDER / WINDOWS EXPLORER) -->
+      <section id="view-mount" class="view-section">
+        <div class="section-header">
+          <div>
+            <h1>Mount as a Native Drive</h1>
+            <p>Connect your Digital Memory Card directly inside macOS Finder, Windows File Explorer, or iPhone Files with zero third-party apps.</p>
+          </div>
+        </div>
+
+        <div class="surface-card mount-hero-card">
+          <div class="mount-url-header">
+            <div>
+              <span class="eyebrow-tag">WEBDAV NETWORK DISK ENDPOINT</span>
+              <h3>Your Personal Drive Address</h3>
+            </div>
+            <span class="status-pill-emerald">Ready to Connect</span>
+          </div>
+
+          <div class="url-copy-bar">
+            <input type="text" id="webdavUrlInput" class="url-input" readonly />
+            <button type="button" id="btnCopyWebdav" class="btn btn-primary">Copy Drive Link</button>
+          </div>
+          <p class="helper-caption">
+            Files dragged into your mounted Finder or Explorer drive are automatically deduplicated and synced here in real time.
+          </p>
+        </div>
+
+        <div class="steps-grid">
+          <div class="surface-card step-card">
+            <div class="step-os-tag">macOS Finder</div>
+            <h3>Mount on Your MacBook</h3>
+            <ol class="clean-steps">
+              <li>Open <strong>Finder</strong> and press <kbd>⌘ Cmd</kbd> + <kbd>K</kbd>.</li>
+              <li>Paste your Drive Link above into the server address field.</li>
+              <li>Click <strong>Connect</strong> and select <strong>Guest</strong> (or enter your Phone & PIN).</li>
+              <li>Your card mounts under <strong>Locations</strong> just like an external SSD.</li>
+            </ol>
+          </div>
+
+          <div class="surface-card step-card">
+            <div class="step-os-tag">Windows 10 / 11</div>
+            <h3>Map as Drive Z:\</h3>
+            <ol class="clean-steps">
+              <li>Open <strong>File Explorer</strong> and select <strong>This PC</strong>.</li>
+              <li>Click <strong>Map Network Drive</strong> in the top toolbar.</li>
+              <li>Choose <strong>Z:</strong> and paste your Drive Link into the Folder box.</li>
+              <li>Click <strong>Finish</strong> to access your files directly from any app.</li>
+            </ol>
+          </div>
+
+          <div class="surface-card step-card">
+            <div class="step-os-tag">iPhone & Android</div>
+            <h3>Home Screen & Same Wi-Fi</h3>
+            <ol class="clean-steps">
+              <li>In Safari or Chrome, tap <strong>Share → Add to Home Screen</strong> for a full-screen icon using 0 MB.</li>
+              <li>On the same Wi-Fi or Hotspot, open <code id="lanUrlText">http://localhost:4000</code> on your phone.</li>
+            </ol>
+          </div>
+        </div>
+      </section>
+
+      <!-- VIEW 3: LOCAL WI-FI BEAM (ZERO-DATA P2P) -->
+      <section id="view-p2p" class="view-section">
+        <div class="section-header">
+          <div>
+            <h1>Local Wi-Fi Beam</h1>
+            <p>Transfer files directly between your phone and laptop over local Wi-Fi or personal hotspot using <strong>0 Bytes</strong> of mobile internet data.</p>
+          </div>
+        </div>
+
+        <div class="p2p-layout">
+          <div class="surface-card">
+            <h3>1. Pair Nearby Devices</h3>
+            <p class="helper-caption" style="margin-bottom: 1.25rem;">
+              Enter the same 4-digit Room Code on both devices (or open a second browser tab to test).
+            </p>
+
+            <div class="form-grid-2">
+              <div class="field">
+                <label for="p2pDeviceName">Device Name</label>
+                <input type="text" id="p2pDeviceName" class="input" placeholder="e.g. MacBook Pro" />
+              </div>
+              <div class="field">
+                <label for="p2pRoomInput">Room Code</label>
+                <input type="text" id="p2pRoomInput" class="input mono" value="2026" maxlength="8" />
+              </div>
+            </div>
+
+            <button type="button" id="btnConnectP2P" class="btn btn-primary" style="margin-top: 1rem;">
+              Join Local Room
+            </button>
+
+            <div id="p2pRoomStatus" class="status-callout" style="margin-top: 1rem;">
+              Not connected to a room yet.
+            </div>
+          </div>
+
+          <div class="surface-card">
+            <h3>2. Connected Devices in Room</h3>
+            <div id="p2pPeersList" class="peers-container">
+              <p class="helper-caption">Join a room to discover nearby devices.</p>
+            </div>
+
+            <div style="margin-top: 1.25rem;">
+              <input type="file" id="p2pFileInput" hidden />
+              <button type="button" id="btnBeamP2PFile" class="btn btn-outline btn-block" disabled>
+                Select File to Beam Instantly (0 MB Data)
+              </button>
+            </div>
+
+            <div id="p2pReceivedBox" class="received-container"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- VIEW 4: STORAGE PLANS & INSTANT OPAY / PALMPAY VERIFICATION -->
+      <section id="view-upgrade" class="view-section">
+        <div class="section-header">
+          <div>
+            <h1>Simple, Sachet Storage Plans</h1>
+            <p>Upgrade in seconds via OPay, PalmPay, or bank transfer. No dollar cards, no card details required.</p>
+          </div>
+        </div>
+
+        <div id="plansGrid" class="plans-grid"></div>
+
+        <div class="billing-bottom-grid">
+          <div class="surface-card">
+            <div class="card-title-row">
+              <h3>Receipts & Transfer History</h3>
+              <span class="eyebrow-tag">VERIFIED LEDGER</span>
+            </div>
+            <div id="userPaymentsHistory" class="ledger-list"></div>
+          </div>
+
+          <div class="surface-card">
+            <div class="card-title-row">
+              <h3>Telegram 1-Tap Bot Simulator</h3>
+              <span class="eyebrow-tag">ADMIN SANDBOX</span>
+            </div>
+            <p class="helper-caption" style="margin-bottom: 0.85rem;">
+              Test how your Telegram Admin Bot approves pending OPay/PalmPay transfers in 1 tap and unlocks storage live on screen:
+            </p>
+            <div id="adminPendingClaimsList" class="ledger-list"></div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <!-- MODAL 1: HTTP 206 STREAMING THEATER -->
+  <dialog id="streamModal" class="dialog dialog-lg">
+    <div class="dialog-header">
+      <div>
+        <span class="eyebrow-tag text-emerald">HTTP 206 STREAM • 0 BYTES SAVED LOCALLY</span>
+        <h3 id="streamModalTitle">Streaming Preview</h3>
+      </div>
+      <button type="button" class="icon-close" id="btnCloseStreamModal" aria-label="Close">✕</button>
+    </div>
+    <div class="dialog-body" id="streamModalBody"></div>
+    <div class="dialog-footer">
+      <span class="mono-caption" id="streamModalHash">SHA-256: ...</span>
+      <a id="streamModalDownloadBtn" href="#" class="btn btn-outline btn-sm" download>
+        Download Copy
+      </a>
+    </div>
+  </dialog>
+
+  <!-- MODAL 2: OPAY / PALMPAY TRANSFER CHECKOUT -->
+  <dialog id="paymentModal" class="dialog">
+    <div class="dialog-header">
+      <div>
+        <span class="eyebrow-tag">INSTANT BANK TRANSFER</span>
+        <h3 id="payModalTitle">Upgrade Storage</h3>
+      </div>
+      <button type="button" class="icon-close" id="btnClosePayModal" aria-label="Close">✕</button>
+    </div>
+    <div class="dialog-body">
+      <div class="checkout-summary">
+        <div>
+          <span class="helper-caption">Selected Plan</span>
+          <div id="payModalPlanBadge" style="font-weight: 700; font-size: 1.05rem;">50 GB Plan</div>
+        </div>
+        <div class="checkout-amount" id="payModalAmount">₦500</div>
+      </div>
+
+      <div class="transfer-accounts">
+        <div class="account-box">
+          <div class="account-box-top">
+            <span class="account-provider">OPay</span>
+            <button type="button" class="btn-text-copy" id="btnCopyOpay">Copy</button>
+          </div>
+          <div class="account-digits" id="opayNumberText">8012345678</div>
+          <div class="account-holder" id="opayNameText">CARDNG DIGITAL STORAGE</div>
+        </div>
+
+        <div class="account-box">
+          <div class="account-box-top">
+            <span class="account-provider">PalmPay</span>
+            <button type="button" class="btn-text-copy" id="btnCopyPalmpay">Copy</button>
+          </div>
+          <div class="account-digits" id="palmpayNumberText">8012345678</div>
+          <div class="account-holder" id="palmpayNameText">CARDNG DIGITAL STORAGE</div>
+        </div>
+      </div>
+
+      <form id="paymentClaimForm" class="dialog-form">
+        <input type="hidden" id="paySelectedPlanId" value="standard" />
+        <div class="field">
+          <label for="payChannelSelect">Transferred From</label>
+          <select id="payChannelSelect" class="input">
+            <option value="OPay">OPay</option>
+            <option value="PalmPay">PalmPay</option>
+            <option value="Moniepoint">Moniepoint</option>
+            <option value="Bank Transfer">Other Bank Transfer</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="paySenderNameInput">Sender Name on Receipt</label>
+          <input
+            type="text"
+            id="paySenderNameInput"
+            class="input"
+            placeholder="e.g. Chukwudi / Adebayo"
+            required
+          />
+        </div>
+        <button type="submit" class="btn btn-primary btn-block">
+          I Have Sent the Transfer
+        </button>
+      </form>
+    </div>
+  </dialog>
+
+  <!-- MODAL 3: LOCK CARD TO PHONE + PIN -->
+  <dialog id="lockCardModal" class="dialog">
+    <div class="dialog-header">
+      <div>
+        <span class="eyebrow-tag">CROSS-DEVICE SECURITY</span>
+        <h3>Lock Card to Phone + PIN</h3>
+      </div>
+      <button type="button" class="icon-close" id="btnCloseLockModal" aria-label="Close">✕</button>
+    </div>
+    <div class="dialog-body">
+      <p class="helper-caption" style="margin-bottom: 1rem;">
+        Link your phone number and a 4-digit PIN so you can open this Memory Card across your Mac, iPhone, Android, or Windows PC anytime.
+      </p>
+      <form id="lockCardForm" class="dialog-form">
+        <div class="field">
+          <label for="lockNameInput">Your Name</label>
+          <input type="text" id="lockNameInput" class="input" placeholder="e.g. Tunde" required />
+        </div>
+        <div class="field">
+          <label for="lockPhoneInput">Nigerian Phone Number</label>
+          <input type="tel" id="lockPhoneInput" class="input" placeholder="08031234567" required />
+        </div>
+        <div class="field">
+          <label for="lockPinInput">4-Digit Security PIN</label>
+          <input
+            type="password"
+            id="lockPinInput"
+            class="input mono"
+            placeholder="••••"
+            pattern="\d{4}"
+            maxlength="4"
+            inputmode="numeric"
+            required
+          />
+        </div>
+        <button type="submit" class="btn btn-primary btn-block">
+          Save & Lock Memory Card
+        </button>
+      </form>
+    </div>
+  </dialog>
+
+  <!-- MODAL 4: SWITCH / RESTORE CARD -->
+  <dialog id="restoreCardModal" class="dialog">
+    <div class="dialog-header">
+      <div>
+        <span class="eyebrow-tag">RESTORE ACCESS</span>
+        <h3>Switch or Restore Memory Card</h3>
+      </div>
+      <button type="button" class="icon-close" id="btnCloseRestoreModal" aria-label="Close">✕</button>
+    </div>
+    <div class="dialog-body">
+      <p class="helper-caption" style="margin-bottom: 1rem;">
+        Enter your linked phone number and 4-digit PIN to mount your existing Memory Card on this browser.
+      </p>
+      <form id="restoreCardForm" class="dialog-form">
+        <div class="field">
+          <label for="restorePhoneInput">Phone Number</label>
+          <input type="tel" id="restorePhoneInput" class="input" placeholder="08031234567" required />
+        </div>
+        <div class="field">
+          <label for="restorePinInput">4-Digit PIN</label>
+          <input
+            type="password"
+            id="restorePinInput"
+            class="input mono"
+            placeholder="••••"
+            maxlength="4"
+            inputmode="numeric"
+            required
+          />
+        </div>
+        <button type="submit" class="btn btn-primary btn-block">
+          Load Memory Card
+        </button>
+      </form>
+    </div>
+  </dialog>
+
+  <script type="module" src="/js/app.js"></script>
+</body>
+</html>
