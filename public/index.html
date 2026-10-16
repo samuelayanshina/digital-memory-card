@@ -207,10 +207,13 @@
           </div>
           <div class="telemetry-divider"></div>
           <div class="telemetry-item">
-            <span class="telemetry-label">Data Saved via Deduplication</span>
-            <strong class="telemetry-val" id="savedDataMetric">0 B</strong>
+            <span class="telemetry-label">Mobile Data Saved</span>
+            <strong class="telemetry-val text-emerald" id="savedDataMetric">0 B</strong>
           </div>
           <div class="telemetry-actions" style="display: flex; gap: 0.45rem; flex-wrap: wrap;">
+            <button type="button" id="btnOpenRemoteFetchModal" class="btn btn-subtle-emerald btn-xs">
+              Cloud Fetch URL (0 MB)
+            </button>
             <button type="button" id="btnOpenCreateFileModal" class="btn btn-outline btn-xs">
               + New Cloud File
             </button>
@@ -266,7 +269,7 @@
               </div>
               <div>
                 <div class="dropbar-title">Drop files here to offload from your device, or <span class="link-highlight" id="btnPickFiles">browse files</span></div>
-                <div class="dropbar-subtitle">SHA-256 verified before local deletion • Shared files upload in 0.1s using 0 MB data</div>
+                <div class="dropbar-subtitle">0 MB on Same Wi-Fi / Hotspot • 0 MB for Deduplicated Files • GZIP Pre-Upload Compression Active</div>
               </div>
             </div>
 
@@ -278,6 +281,11 @@
                 <option value="Documents">Folder: Documents</option>
                 <option value="Private Vault">Folder: Private Vault</option>
               </select>
+
+              <label class="compact-check" title="Compress files on device before uploading to save up to 80% mobile data">
+                <input type="checkbox" id="gzipSaverToggle" checked />
+                <span>GZIP Data Saver</span>
+              </label>
 
               <label class="compact-check" title="Block cellular uploads">
                 <input type="checkbox" id="wifiOnlyToggle" />
@@ -815,6 +823,58 @@ const savedGB = 64 * 2;
         </div>
         <button type="submit" class="btn btn-primary btn-block">
           Save Changes
+        </button>
+      </form>
+    </div>
+  </dialog>
+
+  <!-- MODAL 9: CLOUD DIRECT URL FETCH (0 MB PHONE DATA USED!) -->
+  <dialog id="remoteFetchModal" class="dialog">
+    <div class="dialog-header">
+      <div>
+        <span class="eyebrow-tag text-emerald">0 MB PHONE DATA • SERVER-TO-CLOUD TRANSFER</span>
+        <h3>Cloud Fetch File from URL</h3>
+      </div>
+      <button type="button" class="icon-close" id="btnCloseRemoteFetchModal" aria-label="Close">✕</button>
+    </div>
+    <div class="dialog-body">
+      <p class="helper-caption" style="margin-bottom: 1rem;">
+        Paste any direct link to a movie, course video, PDF, or dataset. Our cloud server will download it directly onto your Digital Memory Card at 1,000 Mbps — <strong>using 0 Bytes of your phone's mobile data and 0 Bytes of phone storage</strong>.
+      </p>
+      <form id="remoteFetchForm" class="dialog-form">
+        <div class="field">
+          <label for="remoteFetchUrlInput">Direct File URL (https://...)</label>
+          <input
+            type="url"
+            id="remoteFetchUrlInput"
+            class="input mono"
+            placeholder="https://example.com/lecture_video.mp4"
+            required
+          />
+        </div>
+        <div class="form-grid-2">
+          <div class="field">
+            <label for="remoteFetchNameInput">Save As Name (Optional)</label>
+            <input
+              type="text"
+              id="remoteFetchNameInput"
+              class="input"
+              placeholder="Auto-detect from URL"
+            />
+          </div>
+          <div class="field">
+            <label for="remoteFetchFolderSelect">Destination Folder</label>
+            <select id="remoteFetchFolderSelect" class="input">
+              <option value="Movies & Media">Movies & Media</option>
+              <option value="Documents">Documents</option>
+              <option value="Dev & Code">Dev & Code</option>
+              <option value="Photos">Photos</option>
+              <option value="Private Vault">Private Vault</option>
+            </select>
+          </div>
+        </div>
+        <button type="submit" class="btn btn-primary btn-block" id="btnSubmitRemoteFetch">
+          Fetch Directly to My Card (0 MB Phone Data)
         </button>
       </form>
     </div>

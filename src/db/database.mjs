@@ -216,11 +216,22 @@ export const db = {
     return { blob, deduplicated: false };
   },
 
-  createFileRecord({ userId, name, folder = 'All Files', sha256, sizeBytes, mimeType, isVaultLocked = false, deduplicated = false }) {
+  createFileRecord({
+    userId,
+    name,
+    folder = 'All Files',
+    sha256,
+    sizeBytes,
+    mimeType,
+    isVaultLocked = false,
+    deduplicated = false,
+    extraSavedDataBytes = 0
+  }) {
     const user = state.users[userId];
     if (!user) throw new Error('User not found');
 
     const id = `fil_${crypto.randomBytes(8).toString('hex')}`;
+    const savedByThisOp = deduplicated ? Number(sizeBytes) : Math.max(0, Number(extraSavedDataBytes || 0));
     const record = {
       id,
       userId,
@@ -233,14 +244,15 @@ export const db = {
       isTrashed: false,
       trashedAt: null,
       deduplicated: Boolean(deduplicated),
+      dataSavedBytes: savedByThisOp,
       safeToDeleteVerified: true,
       createdAt: new Date().toISOString()
     };
 
     state.files[id] = record;
     user.usedBytes += Number(sizeBytes);
-    if (deduplicated) {
-      user.savedDataBytes = (user.savedDataBytes || 0) + Number(sizeBytes);
+    if (savedByThisOp > 0) {
+      user.savedDataBytes = (user.savedDataBytes || 0) + savedByThisOp;
     }
     user.updatedAt = new Date().toISOString();
     persistDatabase();

@@ -402,6 +402,22 @@ async function unlockVaultWithPin() {
   renderFiles();
 }
 
+async function tryCompressFileToGzipBlob(file) {
+  if (typeof CompressionStream === 'undefined' || file.size > 80 * 1024 * 1024) {
+    return null;
+  }
+  try {
+    const compressedStream = file.stream().pipeThrough(new CompressionStream('gzip'));
+    const compressedBlob = await new Response(compressedStream).blob();
+    if (compressedBlob.size < file.size * 0.96) {
+      return compressedBlob;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 async function handleFilesSelected(fileList) {
   if (!fileList || fileList.length === 0) return;
 
@@ -414,6 +430,7 @@ async function handleFilesSelected(fileList) {
   const folder = document.getElementById('uploadFolderSelect').value;
   const isVaultLocked =
     document.getElementById('vaultLockToggle').checked || folder === 'Private Vault';
+  const useGzipSaver = document.getElementById('gzipSaverToggle')?.checked ?? true;
 
   const statusBox = document.getElementById('uploadStatusBox');
   const statusText = document.getElementById('uploadStatusText');
@@ -465,6 +482,17 @@ async function handleFilesSelected(fileList) {
         continue;
       }
 
+      let payloadToSend = file;
+      let isGzipUpload = false;
+      if (useGzipSaver) {
+        statusText.textContent = `Compressing "${file.name}" on device to save mobile data...`;
+        const compressed = await tryCompressFileToGzipBlob(file);
+        if (compressed) {
+          payloadToSend = compressed;
+          isGzipUpload = true;
+        }
+      }
+
       await new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
         xhr.open('POST', '/api/files/upload');
@@ -473,6 +501,9 @@ async function handleFilesSelected(fileList) {
         xhr.setRequestHeader('x-file-folder', encodeURIComponent(folder));
         xhr.setRequestHeader('x-file-sha256', sha256);
         xhr.setRequestHeader('x-file-vault', String(isVaultLocked));
+        if (isGzipUpload) {
+          xhr.setRequestHeader('x-upload-encoding', 'gzip');
+        }
 
         xhr.upload.onprogress = (e) => {
           if (e.lengthComputable) {
@@ -481,7 +512,7 @@ async function handleFilesSelected(fileList) {
             pctText.textContent = `${pct}%`;
             statusText.textContent = `Offloading "${file.name}" (${formatBytes(
               e.loaded
-            )} of ${formatBytes(e.total)})...`;
+            )} of ${formatBytes(e.total)}${isGzipUpload ? ' compressed' : ''})...`;
           }
         };
 
@@ -490,11 +521,16 @@ async function handleFilesSelected(fileList) {
             const response = JSON.parse(xhr.responseText);
             if (xhr.status >= 200 && xhr.status < 300) {
               state.user = response.user;
+              if (response.breakdown) state.breakdown = response.breakdown;
               state.files.unshift(response.file);
               renderCardHeader();
               renderFiles();
+              const savedNote =
+                response.compressionSavedBytes > 0
+                  ? ` (Saved ${formatBytes(response.compressionSavedBytes)} of mobile data via GZIP!)`
+                  : '';
               showBanner(
-                `"${file.name}" verified & stored. You can now safely delete the local copy from your device.`
+                `"${file.name}" verified & stored${savedNote}. Safe to delete local copy from your device.`
               );
               resolve(response);
             } else {
@@ -507,7 +543,7 @@ async function handleFilesSelected(fileList) {
         };
 
         xhr.onerror = () => reject(new Error('Network error during file upload'));
-        xhr.send(file);
+        xhr.send(payloadToSend);
       });
     } catch (err) {
       showBanner(err.message || 'Upload error', true);
@@ -1163,6 +1199,58 @@ window.addEventListener('DOMContentLoaded', async () => {
       )}) onto your Memory Card using 0 MB internet data!`
     );
   });
+
+  // Cloud Direct URL Fetch Modal (0 MB Phone Data!)
+  const remoteFetchModal = document.getElementById('remoteFetchModal');
+  const btnOpenRemoteFetch = document.getElementById('btnOpenRemoteFetchModal');
+  if (btnOpenRemoteFetch && remoteFetchModal) {
+    btnOpenRemoteFetch.addEventListener('click', () => remoteFetchModal.showModal());
+  }
+  const btnCloseRemoteFetch = document.getElementById('btnCloseRemoteFetchModal');
+  if (btnCloseRemoteFetch && remoteFetchModal) {
+    btnCloseRemoteFetch.addEventListener('click', () => remoteFetchModal.close());
+  }
+  const remoteFetchForm = document.getElementById('remoteFetchForm');
+  if (remoteFetchForm) {
+    remoteFetchForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const submitBtn = document.getElementById('btnSubmitRemoteFetch');
+      const url = document.getElementById('remoteFetchUrlInput').value;
+      const name = document.getElementById('remoteFetchNameInput').value;
+      const folder = document.getElementById('remoteFetchFolderSelect').value;
+
+      if (submitBtn) {
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'Cloud Server Fetching at 1,000 Mbps...';
+      }
+
+      try {
+        const res = await fetch('/api/files/remote-fetch', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url, name, folder })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          showBanner(data.error || 'Cloud fetch failed', true);
+          return;
+        }
+        state.user = data.user;
+        state.files.unshift(data.file);
+        if (data.breakdown) state.breakdown = data.breakdown;
+        remoteFetchModal.close();
+        remoteFetchForm.reset();
+        renderCardHeader();
+        renderFiles();
+        showBanner(data.message);
+      } finally {
+        if (submitBtn) {
+          submitBtn.disabled = false;
+          submitBtn.textContent = 'Fetch Directly to My Card (0 MB Phone Data)';
+        }
+      }
+    });
+  }
 
   // Search
   document.getElementById('fileSearchInput').addEventListener('input', (e) => {

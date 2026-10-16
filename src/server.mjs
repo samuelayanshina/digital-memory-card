@@ -17,6 +17,7 @@ import {
   isValidSha256,
   hasPhysicalBlob,
   storeStreamAsBlob,
+  fetchRemoteUrlAsBlob,
   storeBufferAsBlob,
   deletePhysicalBlob
 } from './services/storageEngine.mjs';
@@ -370,7 +371,7 @@ export function createAppServer() {
         });
       }
 
-      // 7. POST /api/files/upload — Stream File Upload to Content-Addressable Storage
+      // 7. POST /api/files/upload — Stream File Upload (Supports On-Device GZIP Data Saver!)
       if (pathname === '/api/files/upload' && req.method === 'POST') {
         const user = getOrProvisionUser(req, res, true);
         const rawName = decodeURIComponent(req.headers['x-file-name'] || 'Uploaded_File');
@@ -378,6 +379,7 @@ export function createAppServer() {
         const folder = decodeURIComponent(req.headers['x-file-folder'] || 'All Files');
         const expectedSha256 = req.headers['x-file-sha256'] || null;
         const isVaultLocked = req.headers['x-file-vault'] === 'true';
+        const isGzipCompressed = req.headers['x-upload-encoding'] === 'gzip';
 
         const remainingQuota = Math.max(0, user.quotaBytes - user.usedBytes);
         if (remainingQuota <= 0) {
@@ -387,9 +389,10 @@ export function createAppServer() {
           });
         }
 
-        const { sha256, sizeBytes } = await storeStreamAsBlob(req, {
+        const { sha256, sizeBytes, compressionSavedBytes } = await storeStreamAsBlob(req, {
           maxBytes: remainingQuota,
-          expectedSha256
+          expectedSha256,
+          isGzipCompressed
         });
 
         const { deduplicated } = db.registerOrIncrementBlob({
@@ -406,15 +409,75 @@ export function createAppServer() {
           sizeBytes,
           mimeType,
           isVaultLocked,
-          deduplicated
+          deduplicated,
+          extraSavedDataBytes: compressionSavedBytes
         });
 
         const updatedUser = db.getUserById(user.id);
         return sendJson(res, 201, {
           deduplicated,
+          compressionSavedBytes,
           file: decorateFileWithStreamUrl(fileRecord, user.id),
           user: sanitizeUserForClient(updatedUser),
+          breakdown: db.getStorageBreakdown(user.id),
           stats: db.getStats()
+        });
+      }
+
+      // 7b. POST /api/files/remote-fetch — Cloud Direct URL Fetch (0 MB Phone Data Used!)
+      if (pathname === '/api/files/remote-fetch' && req.method === 'POST') {
+        const user = getOrProvisionUser(req, res, true);
+        const body = await readJsonBody(req);
+        const targetUrl = String(body.url || '').trim();
+        const customName = String(body.name || '').trim();
+        const folder = String(body.folder || 'Movies & Media');
+        const isVaultLocked = Boolean(body.isVaultLocked) || folder === 'Private Vault';
+
+        const remainingQuota = Math.max(0, user.quotaBytes - user.usedBytes);
+        if (remainingQuota <= 0) {
+          return sendJson(res, 507, {
+            error: 'QUOTA_EXCEEDED: Your Digital Memory Card is full.'
+          });
+        }
+
+        const { sha256, sizeBytes, mimeType, inferredName } = await fetchRemoteUrlAsBlob(
+          targetUrl,
+          { maxBytes: remainingQuota }
+        );
+
+        const { deduplicated } = db.registerOrIncrementBlob({
+          sha256,
+          sizeBytes,
+          mimeType
+        });
+
+        const finalName = customName || inferredName;
+        const fileRecord = db.createFileRecord({
+          userId: user.id,
+          name: finalName,
+          folder,
+          sha256,
+          sizeBytes,
+          mimeType,
+          isVaultLocked,
+          deduplicated,
+          extraSavedDataBytes: sizeBytes // 100% of phone data saved because server fetched it in the cloud!
+        });
+
+        db.appendAuditLog(user.id, {
+          action: 'CLOUD_URL_FETCHED',
+          detail: `Cloud-fetched "${finalName}" (${sizeBytes} bytes) using 0 MB phone data`,
+          severity: 'SUCCESS',
+          ip: clientIp
+        });
+
+        const updatedUser = db.getUserById(user.id);
+        return sendJson(res, 201, {
+          file: decorateFileWithStreamUrl(fileRecord, user.id),
+          user: sanitizeUserForClient(updatedUser),
+          breakdown: db.getStorageBreakdown(user.id),
+          stats: db.getStats(),
+          message: `Cloud Direct Fetch complete! "${finalName}" saved to your card using 0 MB of your phone data.`
         });
       }
 

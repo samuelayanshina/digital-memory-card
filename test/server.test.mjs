@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
+import zlib from 'node:zlib';
 import { Readable, PassThrough } from 'node:stream';
 import { createAppServer } from '../src/server.mjs';
 
@@ -533,5 +534,55 @@ test('11. Tamper-Evident Security Audit Ledger & Multi-Segment Storage Breakdown
   assert.equal(auditData.auditLogs[0].action, 'VAULT_UNLOCKED');
   assert.ok(typeof auditData.breakdown.mediaBytes === 'number');
 });
+
+test('12. On-Device GZIP Data-Saver Upload (80%+ Mobile Data Saved) & SSRF-Safe Cloud Fetch', async () => {
+  const sRes = await dispatch('/api/session');
+  const token = (await sRes.json()).user.sessionToken;
+
+  // 1. Original 50KB dataset buffer compressed with GZIP on client before upload
+  const originalBuffer = Buffer.from(
+    `NIGERIA_STUDENT_DATASET_ROW_${Date.now()},LAGOS,IBADAN,ABUJA,PORT_HARCOURT\n`.repeat(800),
+    'utf-8'
+  );
+  const expectedSha256 = crypto.createHash('sha256').update(originalBuffer).digest('hex');
+  const compressedPayload = zlib.gzipSync(originalBuffer);
+
+  // Compressed payload is < 5% of original size!
+  assert.ok(compressedPayload.length < originalBuffer.length * 0.1);
+
+  const upRes = await dispatch('/api/files/upload', {
+    method: 'POST',
+    headers: {
+      'x-card-token': token,
+      'x-file-name': 'student_records_2026.csv',
+      'x-file-type': 'text/csv',
+      'x-file-folder': 'Documents',
+      'x-file-sha256': expectedSha256,
+      'x-upload-encoding': 'gzip'
+    },
+    body: compressedPayload
+  });
+  assert.equal(upRes.status, 201);
+  const upData = await upRes.json();
+  assert.equal(upData.file.sizeBytes, originalBuffer.length);
+  assert.equal(upData.file.sha256, expectedSha256);
+  assert.ok(upData.compressionSavedBytes > originalBuffer.length * 0.9);
+  assert.equal(upData.user.savedDataBytes, upData.compressionSavedBytes);
+
+  // 2. Verify SSRF protection blocks internal/private IP fetch attempts on /api/files/remote-fetch
+  const ssrfRes = await dispatch('/api/files/remote-fetch', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-card-token': token
+    },
+    body: {
+      url: 'http://127.0.0.1:4000/api/session',
+      folder: 'Documents'
+    }
+  });
+  assert.equal(ssrfRes.status, 400);
+});
+
 
 
