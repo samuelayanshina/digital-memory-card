@@ -99,6 +99,13 @@
               <span>Local Wi-Fi Beam</span>
             </button>
 
+            <button class="nav-item" data-view="view-doctor">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
+              </svg>
+              <span>Mac Storage Doctor</span>
+            </button>
+
             <button class="nav-item" data-view="view-upgrade">
               <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
                 <rect x="1" y="4" width="22" height="16" rx="2" ry="2"/><line x1="1" y1="10" x2="23" y2="10"/>
@@ -188,7 +195,13 @@
             <span class="telemetry-label">Data Saved via Deduplication</span>
             <strong class="telemetry-val" id="savedDataMetric">0 B</strong>
           </div>
-          <div class="telemetry-actions">
+          <div class="telemetry-actions" style="display: flex; gap: 0.45rem; flex-wrap: wrap;">
+            <button type="button" id="btnOpenCreateFileModal" class="btn btn-outline btn-xs">
+              + New Cloud File
+            </button>
+            <button type="button" id="btnOpenClaimShareModal" class="btn btn-outline btn-xs">
+              Claim Shared Code
+            </button>
             <button type="button" id="btnSeedDemoFiles" class="btn btn-ghost btn-xs">
               Load Demo Files
             </button>
@@ -395,14 +408,46 @@
           </div>
         </div>
       </section>
+
+      <!-- VIEW 5: MACBOOK 256GB STORAGE DOCTOR -->
+      <section id="view-doctor" class="view-section">
+        <div class="section-header" style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 1rem;">
+          <div>
+            <h1>256GB MacBook Storage Doctor</h1>
+            <p>Inspect hidden developer caches (Xcode, npm, Gradle) and heavy Downloads folders so you can free up gigabytes before running heavy tasks.</p>
+          </div>
+          <button type="button" id="btnRunDoctorScan" class="btn btn-primary btn-sm">
+            Rescan Mac Hotspots
+          </button>
+        </div>
+
+        <div id="doctorSystemSummary" class="telemetry-strip" style="margin-bottom: 1.25rem;">
+          <div class="telemetry-item">
+            <span class="telemetry-label">Host Machine</span>
+            <strong class="telemetry-val" id="docHostLabel">Scanning...</strong>
+          </div>
+          <div class="telemetry-divider"></div>
+          <div class="telemetry-item">
+            <span class="telemetry-label">System RAM</span>
+            <strong class="telemetry-val" id="docRamLabel">...</strong>
+          </div>
+          <div class="telemetry-divider"></div>
+          <div class="telemetry-item">
+            <span class="telemetry-label">Recommended Action</span>
+            <strong class="telemetry-val text-emerald">Offload Media & Clear Build Caches</strong>
+          </div>
+        </div>
+
+        <div id="doctorHotspotsGrid" class="steps-grid"></div>
+      </section>
     </div>
   </div>
 
-  <!-- MODAL 1: HTTP 206 STREAMING THEATER -->
+  <!-- MODAL 1: HTTP 206 STREAMING THEATER & CLOUD CODE STUDIO -->
   <dialog id="streamModal" class="dialog dialog-lg">
     <div class="dialog-header">
       <div>
-        <span class="eyebrow-tag text-emerald">HTTP 206 STREAM • 0 BYTES SAVED LOCALLY</span>
+        <span class="eyebrow-tag text-emerald">HTTP 206 STREAM & CLOUD STUDIO • 0 BYTES SAVED LOCALLY</span>
         <h3 id="streamModalTitle">Streaming Preview</h3>
       </div>
       <button type="button" class="icon-close" id="btnCloseStreamModal" aria-label="Close">✕</button>
@@ -410,9 +455,17 @@
     <div class="dialog-body" id="streamModalBody"></div>
     <div class="dialog-footer">
       <span class="mono-caption" id="streamModalHash">SHA-256: ...</span>
-      <a id="streamModalDownloadBtn" href="#" class="btn btn-outline btn-sm" download>
-        Download Copy
-      </a>
+      <div style="display: flex; gap: 0.5rem;">
+        <button type="button" id="btnRunCloudCode" class="btn btn-subtle-emerald btn-sm hidden">
+          ▶ Run on Card
+        </button>
+        <button type="button" id="btnSaveCloudCode" class="btn btn-primary btn-sm hidden">
+          Save to Card
+        </button>
+        <a id="streamModalDownloadBtn" href="#" class="btn btn-outline btn-sm" download>
+          Download Copy
+        </a>
+      </div>
     </div>
   </dialog>
 
@@ -558,6 +611,86 @@
           Load Memory Card
         </button>
       </form>
+    </div>
+  </dialog>
+
+  <!-- MODAL 5: CREATE NEW CLOUD CODE / NOTE FILE -->
+  <dialog id="createFileModal" class="dialog">
+    <div class="dialog-header">
+      <div>
+        <span class="eyebrow-tag">CLOUD STUDIO • 0B LOCAL STORAGE</span>
+        <h3>Create New File on Memory Card</h3>
+      </div>
+      <button type="button" class="icon-close" id="btnCloseCreateFileModal" aria-label="Close">✕</button>
+    </div>
+    <div class="dialog-body">
+      <form id="createFileForm" class="dialog-form">
+        <div class="form-grid-2">
+          <div class="field">
+            <label for="newFileNameInput">File Name</label>
+            <input type="text" id="newFileNameInput" class="input mono" placeholder="app.js or notes.md" value="script.js" required />
+          </div>
+          <div class="field">
+            <label for="newFileFolderSelect">Folder</label>
+            <select id="newFileFolderSelect" class="input">
+              <option value="Dev & Code">Dev & Code</option>
+              <option value="Documents">Documents</option>
+            </select>
+          </div>
+        </div>
+        <div class="field">
+          <label for="newFileContentInput">Code / Text Content</label>
+          <textarea id="newFileContentInput" class="input mono" rows="7" placeholder="// Write JavaScript, Python, or Markdown directly onto your Cloud Card...">console.log("Running directly from CardNG Digital Memory Card!");
+const savedGB = 64 * 2;
+({ status: "Zero Local Storage Used", savedGB });</textarea>
+        </div>
+        <button type="submit" class="btn btn-primary btn-block">
+          Create & Save to Cloud Card
+        </button>
+      </form>
+    </div>
+  </dialog>
+
+  <!-- MODAL 6: CLAIM ZERO-DATA SHARED FILE CODE -->
+  <dialog id="claimShareModal" class="dialog">
+    <div class="dialog-header">
+      <div>
+        <span class="eyebrow-tag">ZERO-DATA INSTANT MOUNT</span>
+        <h3>Claim a Shared File Code</h3>
+      </div>
+      <button type="button" class="icon-close" id="btnCloseClaimShareModal" aria-label="Close">✕</button>
+    </div>
+    <div class="dialog-body">
+      <p class="helper-caption" style="margin-bottom: 1rem;">
+        Enter a friend's CardNG Share Code (e.g. <code>CARD-A1B2</code>) to mount their shared movie, dataset, or archive onto your Memory Card in 0.1s using <strong>0 MB of internet data</strong>.
+      </p>
+      <form id="claimShareForm" class="dialog-form">
+        <div class="field">
+          <label for="claimShareCodeInput">Share Code</label>
+          <input type="text" id="claimShareCodeInput" class="input mono" placeholder="CARD-XXXX" required />
+        </div>
+        <button type="submit" class="btn btn-primary btn-block">
+          Mount Shared File Now (0 MB Data)
+        </button>
+      </form>
+    </div>
+  </dialog>
+
+  <!-- MODAL 7: OFFICIAL VERIFIED NIGERIAN PAYMENT RECEIPT -->
+  <dialog id="receiptModal" class="dialog">
+    <div class="dialog-header">
+      <div>
+        <span class="eyebrow-tag text-emerald">VERIFIED TRANSACTION RECEIPT</span>
+        <h3 id="receiptModalNumber">NG-RCPT-000000</h3>
+      </div>
+      <button type="button" class="icon-close" id="btnCloseReceiptModal" aria-label="Close">✕</button>
+    </div>
+    <div class="dialog-body" id="receiptModalBody"></div>
+    <div class="dialog-footer">
+      <span class="mono-caption">CardNG Digital Infrastructure</span>
+      <button type="button" id="btnPrintReceipt" class="btn btn-outline btn-sm">
+        Print / Save PDF
+      </button>
     </div>
   </dialog>
 

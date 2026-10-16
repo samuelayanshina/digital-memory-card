@@ -242,3 +242,110 @@ test('5. WebDAV Virtual Disk Bridge (PROPFIND & PUT for Mac Finder / Windows Exp
   assert.ok(xml.includes('<D:multistatus'));
   assert.ok(xml.includes('finder_script.py'));
 });
+
+test('6. Cloud Code Studio: Create, Edit, Save & Run Code Directly on Memory Card', async () => {
+  const sRes = await dispatch('/api/session');
+  const sData = await sRes.json();
+  const token = sData.user.sessionToken;
+
+  // Create new cloud script
+  const createRes = await dispatch('/api/files/create-text', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-card-token': token
+    },
+    body: {
+      name: 'cloud_calc.js',
+      folder: 'Dev & Code',
+      content: 'const a = 20; const b = 30; console.log("Sum:", a + b); a + b;'
+    }
+  });
+  assert.equal(createRes.status, 201);
+  const createData = await createRes.json();
+  assert.equal(createData.file.name, 'cloud_calc.js');
+
+  // Execute in Cloud Sandbox
+  const runRes = await dispatch('/api/workspace/run', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: {
+      code: 'const a = 20; const b = 30; console.log("Sum:", a + b); a + b;',
+      filename: 'cloud_calc.js'
+    }
+  });
+  assert.equal(runRes.status, 200);
+  const runData = await runRes.json();
+  assert.equal(runData.ok, true);
+  assert.ok(runData.output.includes('Sum: 50'));
+  assert.ok(runData.output.includes('50'));
+
+  // Edit & save updated content directly on card
+  const editRes = await dispatch(`/api/files/${createData.file.id}/content`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-card-token': token
+    },
+    body: {
+      content: 'console.log("Updated on Cloud Card!");'
+    }
+  });
+  assert.equal(editRes.status, 200);
+});
+
+test('7. Zero-Data Share Codes (CARD-XXXX) & 256GB MacBook Storage Doctor', async () => {
+  const userARes = await dispatch('/api/session');
+  const userAData = await userARes.json();
+  const tokenA = userAData.user.sessionToken;
+
+  // User A creates a file and shares it
+  const createRes = await dispatch('/api/files/create-text', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-card-token': tokenA
+    },
+    body: {
+      name: 'shared_course_notes.md',
+      folder: 'Documents',
+      content: `# Shared Course Notes ${Date.now()}`
+    }
+  });
+  const fileA = (await createRes.json()).file;
+
+  const shareRes = await dispatch(`/api/files/${fileA.id}/share`, {
+    method: 'POST',
+    headers: { 'x-card-token': tokenA }
+  });
+  assert.equal(shareRes.status, 200);
+  const shareData = await shareRes.json();
+  assert.ok(shareData.share.shareCode.startsWith('CARD-'));
+
+  // User B claims the share code using 0 MB internet data
+  const userBRes = await dispatch('/api/session');
+  const tokenB = (await userBRes.json()).user.sessionToken;
+
+  const claimRes = await dispatch('/api/files/claim-share', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-card-token': tokenB
+    },
+    body: {
+      shareCode: shareData.share.shareCode
+    }
+  });
+  assert.equal(claimRes.status, 201);
+  const claimData = await claimRes.json();
+  assert.equal(claimData.file.name, 'shared_course_notes.md');
+  assert.equal(claimData.file.deduplicated, true);
+
+  // Mac Storage Doctor Scan
+  const docRes = await dispatch('/api/mac-doctor/scan');
+  assert.equal(docRes.status, 200);
+  const docData = await docRes.json();
+  assert.ok(Array.isArray(docData.hotspots));
+  assert.equal(docData.hotspots.length, 4);
+});
+

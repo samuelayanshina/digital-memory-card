@@ -33,6 +33,10 @@ import {
   sanitizeUserForClient
 } from './services/realtimeAndBot.mjs';
 import { handleWebDavRequest } from './services/webdavServer.mjs';
+import {
+  scanDeveloperStorageHotspots,
+  executeCodeInCardSandbox
+} from './services/macDoctorAndRunner.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.resolve(__dirname, '../public');
@@ -400,6 +404,23 @@ export function createAppServer() {
                 `    print("CardNG Developer Engine Ready — 0 Bytes Local SSD Used!")\n`,
               'utf-8'
             )
+          },
+          {
+            name: 'lagos_storage_calculator.js',
+            folder: 'Dev & Code',
+            mimeType: 'text/javascript',
+            buffer: Buffer.from(
+              `// Editable & Runnable directly inside CardNG Cloud Studio (0B Local Space)\n` +
+                `const macbookTotalGB = 256;\n` +
+                `const offloadedMoviesGB = 42.5;\n` +
+                `const offloadedXcodeArchivesGB = 28.0;\n` +
+                `const totalFreedGB = offloadedMoviesGB + offloadedXcodeArchivesGB;\n\n` +
+                `console.log("MacBook Internal SSD:", macbookTotalGB + " GB");\n` +
+                `console.log("Space Freed via CardNG:", totalFreedGB + " GB");\n` +
+                `console.log("Remaining Local Disk Pressure: LOW (Ready for Xcode & Python)");\n\n` +
+                `({ freedPercent: ((totalFreedGB / macbookTotalGB) * 100).toFixed(1) + "%" });\n`,
+              'utf-8'
+            )
           }
         ];
 
@@ -429,6 +450,104 @@ export function createAppServer() {
           user: sanitizeUserForClient(updatedUser),
           stats: db.getStats()
         });
+      }
+
+      // 8b. POST /api/files/create-text — Create New Code / Note File Directly on Card
+      if (pathname === '/api/files/create-text' && req.method === 'POST') {
+        const user = getOrProvisionUser(req, res, true);
+        const body = await readJsonBody(req, 5 * 1024 * 1024);
+        const name = String(body.name || 'untitled.js').trim();
+        const content = String(body.content || '');
+        const folder = String(body.folder || 'Dev & Code');
+        const mimeType = name.endsWith('.js')
+          ? 'text/javascript'
+          : name.endsWith('.py')
+            ? 'text/x-python'
+            : name.endsWith('.md')
+              ? 'text/markdown'
+              : 'text/plain';
+
+        const buf = Buffer.from(content, 'utf-8');
+        if (user.usedBytes + buf.length > user.quotaBytes) {
+          return sendJson(res, 507, { error: 'QUOTA_EXCEEDED: Not enough space on Memory Card' });
+        }
+
+        const { sha256, sizeBytes } = storeBufferAsBlob(buf);
+        const { deduplicated } = db.registerOrIncrementBlob({ sha256, sizeBytes, mimeType });
+        const rec = db.createFileRecord({
+          userId: user.id,
+          name,
+          folder,
+          sha256,
+          sizeBytes,
+          mimeType,
+          deduplicated
+        });
+
+        return sendJson(res, 201, {
+          file: decorateFileWithStreamUrl(rec, user.id),
+          user: sanitizeUserForClient(db.getUserById(user.id))
+        });
+      }
+
+      // 8c. PUT /api/files/:id/content — Save Cloud Studio Edits Directly to Card
+      const contentMatch = pathname.match(/^\/api\/files\/([^/]+)\/content$/);
+      if (contentMatch && req.method === 'PUT') {
+        const user = getOrProvisionUser(req, res, false);
+        if (!user) return sendJson(res, 401, { error: 'Unauthorized' });
+        const body = await readJsonBody(req, 5 * 1024 * 1024);
+        const buf = Buffer.from(String(body.content ?? ''), 'utf-8');
+        const { sha256, sizeBytes } = storeBufferAsBlob(buf);
+
+        const updated = db.updateFileBlob(contentMatch[1], user.id, {
+          newSha256: sha256,
+          newSizeBytes: sizeBytes
+        });
+        if (!updated) return sendJson(res, 404, { error: 'File not found' });
+        if (updated.shouldDeleteOldBlob && updated.oldSha) {
+          deletePhysicalBlob(updated.oldSha);
+        }
+
+        return sendJson(res, 200, {
+          file: decorateFileWithStreamUrl(updated.file, user.id),
+          user: sanitizeUserForClient(db.getUserById(user.id))
+        });
+      }
+
+      // 8d. POST /api/workspace/run — Run JS Code Directly on Digital Memory Card
+      if (pathname === '/api/workspace/run' && req.method === 'POST') {
+        const body = await readJsonBody(req, 512 * 1024);
+        const result = executeCodeInCardSandbox(body.code || '', body.filename || 'card_script.js');
+        return sendJson(res, 200, result);
+      }
+
+      // 8e. POST /api/files/:id/share — Generate Zero-Data Instant Share Code
+      const shareMatch = pathname.match(/^\/api\/files\/([^/]+)\/share$/);
+      if (shareMatch && req.method === 'POST') {
+        const user = getOrProvisionUser(req, res, false);
+        if (!user) return sendJson(res, 401, { error: 'Unauthorized' });
+        const share = db.createShareCode(shareMatch[1], user.id);
+        if (!share) return sendJson(res, 404, { error: 'File not found' });
+        return sendJson(res, 200, { share });
+      }
+
+      // 8f. POST /api/files/claim-share — Claim Shared File into Card (0 MB Internet Data!)
+      if (pathname === '/api/files/claim-share' && req.method === 'POST') {
+        const user = getOrProvisionUser(req, res, true);
+        const body = await readJsonBody(req);
+        const { file, share } = db.claimShareCode(body.shareCode, user.id);
+        const updatedUser = db.getUserById(user.id);
+        return sendJson(res, 201, {
+          file: decorateFileWithStreamUrl(file, user.id),
+          share,
+          user: sanitizeUserForClient(updatedUser)
+        });
+      }
+
+      // 8g. GET /api/mac-doctor/scan — Scan 256GB MacBook Developer Storage Hotspots
+      if (pathname === '/api/mac-doctor/scan' && req.method === 'GET') {
+        const report = scanDeveloperStorageHotspots();
+        return sendJson(res, 200, report);
       }
 
       // 9. GET /api/files/:id/stream — HTTP 206 Partial Content Media Streamer

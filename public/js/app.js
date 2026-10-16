@@ -11,6 +11,7 @@ const state = {
   activeFolder: 'ALL',
   searchQuery: '',
   vaultUnlocked: false,
+  activeStudioFileId: null,
   p2pPeerId: `peer_${Math.random().toString(36).slice(2, 8)}`,
   p2pRoomCode: null,
   p2pEventSource: null
@@ -50,6 +51,23 @@ async function computeFileSha256(file) {
   const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
   const hashArray = Array.from(new Uint8Array(hashBuffer));
   return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+function isEditableTextFile(file) {
+  const mime = file.mimeType || '';
+  const name = (file.name || '').toLowerCase();
+  return (
+    mime.startsWith('text/') ||
+    mime.includes('json') ||
+    mime.includes('javascript') ||
+    mime.includes('python') ||
+    name.endsWith('.md') ||
+    name.endsWith('.py') ||
+    name.endsWith('.js') ||
+    name.endsWith('.ts') ||
+    name.endsWith('.json') ||
+    name.endsWith('.txt')
+  );
 }
 
 function getFileSvgIcon(mime = '', name = '') {
@@ -94,6 +112,8 @@ function switchView(viewId, folder = null) {
 
   if (viewId === 'view-files') {
     renderFiles();
+  } else if (viewId === 'view-doctor') {
+    runMacStorageDoctorScan();
   }
 }
 
@@ -182,7 +202,7 @@ function renderFiles() {
       <div class="surface-card" style="grid-column: 1 / -1; text-align: center; padding: 3rem 1.5rem;">
         <h3 style="font-size: 1.05rem; margin-bottom: 0.35rem;">Your Digital Memory Card is Ready</h3>
         <p class="helper-caption" style="max-width: 440px; margin: 0 auto 1.15rem;">
-          Drop any movie, photo, or code archive into the bar above to offload it from your device — or load sample files to test instant streaming.
+          Drop any movie, photo, or code archive into the bar above to offload it from your device — or load sample files to test instant streaming and code execution.
         </p>
         <button type="button" class="btn btn-outline btn-sm" id="btnEmptySeedDemo">
           Load Sample Audio & Code Files
@@ -199,8 +219,9 @@ function renderFiles() {
   }
 
   grid.innerHTML = filtered
-    .map(
-      (file) => `
+    .map((file) => {
+      const editable = isEditableTextFile(file);
+      return `
     <article class="file-card">
       <div>
         <div class="file-card-top">
@@ -222,13 +243,11 @@ function renderFiles() {
 
       <div class="file-actions">
         <button class="btn btn-primary btn-xs" data-action="stream" data-id="${file.id}">
-          Stream
+          ${editable ? 'Studio / Run' : 'Stream'}
         </button>
-        <a href="${file.downloadUrl}" class="btn btn-outline btn-xs" download="${escapeHtml(
-          file.name
-        )}">
-          Download
-        </a>
+        <button class="btn btn-outline btn-xs" data-action="share" data-id="${file.id}" title="Share with a friend using 0 MB internet data">
+          Share
+        </button>
         <button class="btn btn-ghost btn-xs" data-action="toggle-vault" data-id="${file.id}">
           ${file.isVaultLocked ? 'Unvault' : 'Vault'}
         </button>
@@ -239,8 +258,8 @@ function renderFiles() {
         </button>
       </div>
     </article>
-  `
-    )
+  `;
+    })
     .join('');
 }
 
@@ -379,20 +398,28 @@ async function handleFilesSelected(fileList) {
   }, 2200);
 }
 
+// Open HTTP 206 Streaming Theater & Interactive Cloud Code Studio
 async function openStreamModal(fileId) {
   const file = state.files.find((f) => f.id === fileId);
   if (!file) return;
+
+  state.activeStudioFileId = file.id;
 
   const modal = document.getElementById('streamModal');
   const title = document.getElementById('streamModalTitle');
   const body = document.getElementById('streamModalBody');
   const hashLabel = document.getElementById('streamModalHash');
   const downloadBtn = document.getElementById('streamModalDownloadBtn');
+  const runBtn = document.getElementById('btnRunCloudCode');
+  const saveBtn = document.getElementById('btnSaveCloudCode');
 
   title.textContent = `${file.name} (${formatBytes(file.sizeBytes)})`;
   hashLabel.textContent = `SHA-256: ${file.sha256.slice(0, 24)}...`;
   downloadBtn.href = file.downloadUrl;
   downloadBtn.setAttribute('download', file.name);
+
+  runBtn.classList.add('hidden');
+  saveBtn.classList.add('hidden');
 
   const mime = file.mimeType || '';
 
@@ -418,21 +445,25 @@ async function openStreamModal(fileId) {
         )}" style="max-width: 100%; max-height: 62vh; border-radius: 10px;" />
       </div>
     `;
-  } else if (
-    mime.startsWith('text/') ||
-    mime.includes('json') ||
-    mime.includes('javascript') ||
-    mime.includes('python') ||
-    file.name.endsWith('.md') ||
-    file.name.endsWith('.py') ||
-    file.name.endsWith('.js') ||
-    file.name.endsWith('.ts')
-  ) {
-    body.innerHTML = `<p class="helper-caption">Streaming file contents...</p>`;
+  } else if (isEditableTextFile(file)) {
+    body.innerHTML = `<p class="helper-caption">Opening Cloud Studio directly from Memory Card...</p>`;
     modal.showModal();
     const res = await fetch(file.streamUrl);
     const text = await res.text();
-    body.innerHTML = `<pre class="code-preview-pre"><code>${escapeHtml(text)}</code></pre>`;
+
+    saveBtn.classList.remove('hidden');
+    if (file.name.endsWith('.js')) {
+      runBtn.classList.remove('hidden');
+    }
+
+    body.innerHTML = `
+      <div style="display: flex; flex-direction: column; gap: 0.75rem;">
+        <textarea id="cloudStudioTextarea" class="input mono" rows="12" style="width: 100%; font-size: 0.82rem; line-height: 1.55;">${escapeHtml(
+          text
+        )}</textarea>
+        <div id="cloudStudioOutputBox" class="status-callout mono hidden" style="white-space: pre-wrap; max-height: 180px; overflow-y: auto;"></div>
+      </div>
+    `;
     return;
   } else {
     body.innerHTML = `
@@ -448,6 +479,95 @@ async function openStreamModal(fileId) {
     `;
   }
 
+  modal.showModal();
+}
+
+// RunMacStorageDoctorScan
+async function runMacStorageDoctorScan() {
+  const grid = document.getElementById('doctorHotspotsGrid');
+  grid.innerHTML = `<p class="helper-caption">Scanning macOS developer cache hotspots...</p>`;
+
+  try {
+    const res = await fetch('/api/mac-doctor/scan');
+    const data = await res.json();
+
+    document.getElementById('docHostLabel').textContent = `${data.hostname} (${data.platform})`;
+    document.getElementById('docRamLabel').textContent = `${formatBytes(
+      data.freeMemBytes
+    )} Free / ${formatBytes(data.totalMemBytes)} Total`;
+
+    grid.innerHTML = (data.hotspots || [])
+      .map(
+        (h) => `
+      <div class="surface-card step-card">
+        <div class="step-os-tag">${h.exists ? 'Detected on Mac' : 'Clean / Not Present'}</div>
+        <h3>${escapeHtml(h.title)}</h3>
+        <p class="helper-caption" style="margin: 0.35rem 0 0.75rem;">
+          ${escapeHtml(h.recommendation)}
+        </p>
+        <div style="font-size: 0.82rem; margin-bottom: 0.75rem;">
+          Sampled Size: <strong>${formatBytes(h.sampledBytes)}</strong> (${h.sampledFilesCount} items scanned)
+        </div>
+        <div class="url-copy-bar" style="margin-bottom: 0;">
+          <input type="text" class="url-input" value="${escapeHtml(h.command)}" readonly />
+          <button type="button" class="btn btn-outline btn-xs" data-copy-cmd="${escapeHtml(
+            h.command
+          )}">Copy</button>
+        </div>
+      </div>
+    `
+      )
+      .join('');
+  } catch {
+    grid.innerHTML = `<p class="helper-caption">Could not scan host filesystem.</p>`;
+  }
+}
+
+function openReceiptModal(payment) {
+  const modal = document.getElementById('receiptModal');
+  document.getElementById('receiptModalNumber').textContent =
+    payment.receiptNumber || payment.reference;
+
+  document.getElementById('receiptModalBody').innerHTML = `
+    <div style="border: 1px solid var(--border-hairline); border-radius: 12px; padding: 1.25rem; background: var(--bg-canvas);">
+      <div style="display: flex; justify-content: space-between; align-items: center; padding-bottom: 0.85rem; border-bottom: 1px solid var(--border-hairline); margin-bottom: 0.85rem;">
+        <div>
+          <div style="font-weight: 700; font-size: 1rem;">CardNG Storage Expansion</div>
+          <div class="helper-caption">${new Date(
+            payment.resolvedAt || payment.createdAt
+          ).toLocaleString()}</div>
+        </div>
+        <span class="status-pill-emerald">PAID & VERIFIED</span>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 0.55rem; font-size: 0.86rem;">
+        <div style="display: flex; justify-content: space-between;">
+          <span class="helper-caption">Amount Paid:</span>
+          <strong>₦${Number(payment.amountNaira).toLocaleString()}</strong>
+        </div>
+        <div style="display: flex; justify-content: space-between;">
+          <span class="helper-caption">Plan Unlocked:</span>
+          <strong>${escapeHtml(payment.planName)} (${escapeHtml(payment.quotaLabel)})</strong>
+        </div>
+        <div style="display: flex; justify-content: space-between;">
+          <span class="helper-caption">Payment Channel:</span>
+          <strong>${escapeHtml(payment.channel)}</strong>
+        </div>
+        <div style="display: flex; justify-content: space-between;">
+          <span class="helper-caption">Sender Name:</span>
+          <strong>${escapeHtml(payment.senderName)}</strong>
+        </div>
+        <div style="display: flex; justify-content: space-between;">
+          <span class="helper-caption">Memory Card Serial:</span>
+          <code class="mono">${escapeHtml(payment.cardSerial)}</code>
+        </div>
+        <div style="display: flex; justify-content: space-between;">
+          <span class="helper-caption">Transfer Reference:</span>
+          <code class="mono">${escapeHtml(payment.reference)}</code>
+        </div>
+      </div>
+    </div>
+  `;
   modal.showModal();
 }
 
@@ -502,15 +622,22 @@ function renderPlansAndPayments() {
             ${p.receiptNumber ? ` · Receipt: <code>${p.receiptNumber}</code>` : ''}
           </div>
         </div>
-        <span class="safe-badge" style="${
-          p.status === 'APPROVED'
-            ? ''
-            : p.status === 'REJECTED'
-              ? 'background: #fef2f2; color: #dc2626;'
-              : 'background: #fef3c7; color: #b45309;'
-        }">
-          ${p.status}
-        </span>
+        <div style="display: flex; align-items: center; gap: 0.45rem;">
+          ${
+            p.status === 'APPROVED'
+              ? `<button type="button" class="btn btn-outline btn-xs" data-view-receipt="${p.id}">Receipt</button>`
+              : ''
+          }
+          <span class="safe-badge" style="${
+            p.status === 'APPROVED'
+              ? ''
+              : p.status === 'REJECTED'
+                ? 'background: #fef2f2; color: #dc2626;'
+                : 'background: #fef3c7; color: #b45309;'
+          }">
+            ${p.status}
+          </span>
+        </div>
       </div>
     `
       )
@@ -582,6 +709,7 @@ function connectLiveEvents() {
           showBanner(
             `Payment Approved (${data.payment.receiptNumber}): Your Memory Card is now expanded to ${data.payment.quotaLabel}!`
           );
+          openReceiptModal(data.payment);
         } else {
           showBanner(`Payment claim ${data.payment.reference} was declined.`, true);
         }
@@ -774,8 +902,75 @@ window.addEventListener('DOMContentLoaded', async () => {
       state.files = [...data.files, ...state.files];
       renderCardHeader();
       renderFiles();
-      showBanner('Sample audio and developer files added to your Memory Card.');
+      showBanner('Sample audio and runnable developer files added to your Memory Card.');
     }
+  });
+
+  // Create New Cloud File Modal
+  const createFileModal = document.getElementById('createFileModal');
+  document
+    .getElementById('btnOpenCreateFileModal')
+    .addEventListener('click', () => createFileModal.showModal());
+  document
+    .getElementById('btnCloseCreateFileModal')
+    .addEventListener('click', () => createFileModal.close());
+
+  document.getElementById('createFileForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const name = document.getElementById('newFileNameInput').value;
+    const folder = document.getElementById('newFileFolderSelect').value;
+    const content = document.getElementById('newFileContentInput').value;
+
+    const res = await fetch('/api/files/create-text', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, folder, content })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      showBanner(data.error || 'Could not create file', true);
+      return;
+    }
+    state.user = data.user;
+    state.files.unshift(data.file);
+    createFileModal.close();
+    renderCardHeader();
+    renderFiles();
+    showBanner(`Created "${data.file.name}" directly on your Memory Card (0B local space used).`);
+  });
+
+  // Claim Shared Code Modal
+  const claimShareModal = document.getElementById('claimShareModal');
+  document
+    .getElementById('btnOpenClaimShareModal')
+    .addEventListener('click', () => claimShareModal.showModal());
+  document
+    .getElementById('btnCloseClaimShareModal')
+    .addEventListener('click', () => claimShareModal.close());
+
+  document.getElementById('claimShareForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const shareCode = document.getElementById('claimShareCodeInput').value;
+    const res = await fetch('/api/files/claim-share', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ shareCode })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      showBanner(data.error || 'Invalid share code', true);
+      return;
+    }
+    state.user = data.user;
+    state.files.unshift(data.file);
+    claimShareModal.close();
+    renderCardHeader();
+    renderFiles();
+    showBanner(
+      `Mounted "${data.file.name}" (${formatBytes(
+        data.file.sizeBytes
+      )}) onto your Memory Card using 0 MB internet data!`
+    );
   });
 
   // Search
@@ -788,7 +983,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     }
   });
 
-  // File Card Actions
+  // File Card Actions (Stream/Studio, Share, Vault, Delete)
   document.getElementById('filesGrid').addEventListener('click', async (e) => {
     const btn = e.target.closest('button[data-action]');
     if (!btn) return;
@@ -797,6 +992,15 @@ window.addEventListener('DOMContentLoaded', async () => {
 
     if (action === 'stream') {
       openStreamModal(fileId);
+    } else if (action === 'share') {
+      const res = await fetch(`/api/files/${fileId}/share`, { method: 'POST' });
+      const data = await res.json();
+      if (res.ok && data.share) {
+        navigator.clipboard.writeText(data.share.shareCode).catch(() => {});
+        showBanner(
+          `Zero-Data Share Code "${data.share.shareCode}" copied! Anyone can claim "${data.share.name}" using 0 MB data.`
+        );
+      }
     } else if (action === 'toggle-vault') {
       const file = state.files.find((f) => f.id === fileId);
       if (!file) return;
@@ -829,11 +1033,66 @@ window.addEventListener('DOMContentLoaded', async () => {
     }
   });
 
+  // Cloud Studio Run & Save Buttons
+  document.getElementById('btnRunCloudCode').addEventListener('click', async () => {
+    const textarea = document.getElementById('cloudStudioTextarea');
+    const outBox = document.getElementById('cloudStudioOutputBox');
+    if (!textarea || !outBox) return;
+
+    const file = state.files.find((f) => f.id === state.activeStudioFileId);
+    outBox.classList.remove('hidden');
+    outBox.textContent = 'Running on Cloud Card Sandbox...';
+
+    const res = await fetch('/api/workspace/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        code: textarea.value,
+        filename: file ? file.name : 'script.js'
+      })
+    });
+    const data = await res.json();
+    outBox.textContent = `[Executed in ${data.durationMs}ms · 0B Local Disk]\n${data.output}`;
+  });
+
+  document.getElementById('btnSaveCloudCode').addEventListener('click', async () => {
+    const textarea = document.getElementById('cloudStudioTextarea');
+    if (!textarea || !state.activeStudioFileId) return;
+
+    const res = await fetch(`/api/files/${state.activeStudioFileId}/content`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: textarea.value })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      state.user = data.user;
+      const idx = state.files.findIndex((f) => f.id === state.activeStudioFileId);
+      if (idx >= 0) state.files[idx] = data.file;
+      renderCardHeader();
+      renderFiles();
+      showBanner(`Saved changes to "${data.file.name}" directly on your Memory Card.`);
+    } else {
+      showBanner(data.error || 'Could not save file', true);
+    }
+  });
+
   // Stream Modal Close
   const streamModal = document.getElementById('streamModal');
   document.getElementById('btnCloseStreamModal').addEventListener('click', () => {
     document.getElementById('streamModalBody').innerHTML = '';
     streamModal.close();
+  });
+
+  // Mac Storage Doctor Actions
+  document
+    .getElementById('btnRunDoctorScan')
+    .addEventListener('click', () => runMacStorageDoctorScan());
+  document.getElementById('doctorHotspotsGrid').addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-copy-cmd]');
+    if (!btn) return;
+    navigator.clipboard.writeText(btn.dataset.copyCmd);
+    showBanner(`Copied terminal cleanup command: ${btn.dataset.copyCmd}`);
   });
 
   // WebDAV Copy
@@ -904,6 +1163,19 @@ window.addEventListener('DOMContentLoaded', async () => {
       body: JSON.stringify({ action: btn.dataset.resolveAction })
     });
   });
+
+  // View Official Receipt Modal
+  const receiptModal = document.getElementById('receiptModal');
+  document.getElementById('userPaymentsHistory').addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-view-receipt]');
+    if (!btn) return;
+    const payment = state.payments.find((p) => p.id === btn.dataset.viewReceipt);
+    if (payment) openReceiptModal(payment);
+  });
+  document
+    .getElementById('btnCloseReceiptModal')
+    .addEventListener('click', () => receiptModal.close());
+  document.getElementById('btnPrintReceipt').addEventListener('click', () => window.print());
 
   // Lock Card Modal
   const lockModal = document.getElementById('lockCardModal');

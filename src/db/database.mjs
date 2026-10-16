@@ -13,6 +13,7 @@ const defaultState = {
   blobs: {},       // sha256 -> { sha256, sizeBytes, mimeType, refCount, createdAt }
   files: {},       // fileId -> FileRecord
   payments: {},    // paymentId -> PaymentRecord
+  shares: {},      // shareCode -> ShareRecord
   stats: {
     totalPhysicalBytes: 0,
     totalVirtualBytes: 0,
@@ -365,5 +366,115 @@ export const db = {
 
   getPaymentById(paymentId) {
     return state.payments[paymentId] || null;
+  },
+
+  updateFileBlob(fileId, userId, { newSha256, newSizeBytes, mimeType }) {
+    const file = state.files[fileId];
+    if (!file || file.userId !== userId) return null;
+    const user = state.users[userId];
+    if (!user) return null;
+
+    const oldSha = file.sha256;
+    const oldSize = file.sizeBytes;
+    const sizeDelta = Number(newSizeBytes) - oldSize;
+
+    if (user.usedBytes + sizeDelta > user.quotaBytes) {
+      throw new Error('QUOTA_EXCEEDED: Not enough space on your Memory Card to save changes');
+    }
+
+    let shouldDeleteOldBlob = false;
+    if (oldSha !== newSha256) {
+      const oldBlob = state.blobs[oldSha];
+      if (oldBlob) {
+        oldBlob.refCount = Math.max(0, oldBlob.refCount - 1);
+        if (oldBlob.refCount === 0) {
+          delete state.blobs[oldSha];
+          state.stats.totalPhysicalBytes = Math.max(0, state.stats.totalPhysicalBytes - oldSize);
+          shouldDeleteOldBlob = true;
+        }
+      }
+      db.registerOrIncrementBlob({
+        sha256: newSha256,
+        sizeBytes: Number(newSizeBytes),
+        mimeType: mimeType || file.mimeType
+      });
+    }
+
+    file.sha256 = newSha256;
+    file.sizeBytes = Number(newSizeBytes);
+    file.updatedAt = new Date().toISOString();
+    user.usedBytes = Math.max(0, user.usedBytes + sizeDelta);
+    user.updatedAt = new Date().toISOString();
+
+    persistDatabase();
+    return { file, shouldDeleteOldBlob, oldSha };
+  },
+
+  createShareCode(fileId, userId) {
+    const file = state.files[fileId];
+    if (!file || file.userId !== userId) return null;
+
+    // Return existing share code if already created for this file
+    const existing = Object.values(state.shares || {}).find((s) => s.fileId === fileId);
+    if (existing) return existing;
+
+    const codeSuffix = crypto.randomBytes(2).toString('hex').toUpperCase();
+    const numSuffix = Math.floor(10 + Math.random() * 89);
+    const shareCode = `CARD-${codeSuffix}${numSuffix}`;
+
+    const share = {
+      shareCode,
+      fileId: file.id,
+      ownerId: userId,
+      name: file.name,
+      folder: file.folder,
+      sha256: file.sha256,
+      sizeBytes: file.sizeBytes,
+      mimeType: file.mimeType,
+      claimsCount: 0,
+      createdAt: new Date().toISOString()
+    };
+
+    if (!state.shares) state.shares = {};
+    state.shares[shareCode] = share;
+    persistDatabase();
+    return share;
+  },
+
+  claimShareCode(rawCode, targetUserId) {
+    if (!state.shares) state.shares = {};
+    const code = String(rawCode || '').trim().toUpperCase();
+    const share = state.shares[code];
+    if (!share) {
+      throw new Error('Invalid or expired Share Code. Check the code (e.g. CARD-A1B2) and try again.');
+    }
+
+    const user = state.users[targetUserId];
+    if (!user) throw new Error('User not found');
+
+    if (user.usedBytes + share.sizeBytes > user.quotaBytes) {
+      throw new Error('QUOTA_EXCEEDED: Not enough free space on your Memory Card to claim this shared file.');
+    }
+
+    db.registerOrIncrementBlob({
+      sha256: share.sha256,
+      sizeBytes: share.sizeBytes,
+      mimeType: share.mimeType
+    });
+
+    const clonedFile = db.createFileRecord({
+      userId: targetUserId,
+      name: share.name,
+      folder: share.folder === 'Private Vault' ? 'All Files' : share.folder,
+      sha256: share.sha256,
+      sizeBytes: share.sizeBytes,
+      mimeType: share.mimeType,
+      isVaultLocked: false,
+      deduplicated: true
+    });
+
+    share.claimsCount = (share.claimsCount || 0) + 1;
+    persistDatabase();
+    return { file: clonedFile, share };
   }
 };

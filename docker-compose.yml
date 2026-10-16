@@ -1,0 +1,20 @@
+services:
+  cardng:
+    build: .
+    container_name: cardng-digital-memory-card
+    restart: unless-stopped
+    ports:
+      - "4000:4000"
+    environment:
+      - PORT=4000
+      - HOST=0.0.0.0
+      - STORAGE_ROOT=/data/cardng-storage
+      - APP_SECRET=${APP_SECRET:-cardng-super-secret-hmac-key-2026-nigeria}
+      - OPAY_ACCOUNT_NUMBER=${OPAY_ACCOUNT_NUMBER:-8012345678}
+      - OPAY_ACCOUNT_NAME=${OPAY_ACCOUNT_NAME:-CARDNG DIGITAL STORAGE}
+      - PALMPAY_ACCOUNT_NUMBER=${PALMPAY_ACCOUNT_NUMBER:-8012345678}
+      - PALMPAY_ACCOUNT_NAME=${PALMPAY_ACCOUNT_NAME:-CARDNG DIGITAL STORAGE}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - TELEGRAM_ADMIN_CHAT_ID=${TELEGRAM_ADMIN_CHAT_ID:-}
+    volumes:
+      - ./storage:/data/cardng-storage
