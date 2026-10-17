@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: cardng-digital-memory-card
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node src/server.mjs
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 4000
+      - key: ADMIN_PIN
+        value: "9934"
+      - key: OPAY_ACCOUNT_NUMBER
+        value: "8114587431"
+      - key: OPAY_ACCOUNT_NAME
+        value: MAYORKUN SAMUEL AYANSHINA
+      - key: PALMPAY_ACCOUNT_NUMBER
+        value: "8114587431"
+      - key: PALMPAY_ACCOUNT_NAME
+        value: MAYORKUN SAMUEL AYANSHINA
+      - key: TELEGRAM_ADMIN_CHAT_ID
+        value: "8619019083"
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: APP_SECRET
+        generateValue: true
