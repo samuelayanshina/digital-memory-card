@@ -2,6 +2,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { STORAGE_PLANS, APP_CONFIG } from './config/plans.mjs';
 import { db } from './db/database.mjs';
@@ -1034,7 +1035,7 @@ export function createAppServer() {
         });
       }
 
-      // 12. POST /api/payments/claim — Submit OPay / PalmPay Transfer Claim
+      // 12. POST /api/payments/claim — Submit OPay / PalmPay Transfer Claim (Supports Instant 0-Second Unlock!)
       if (pathname === '/api/payments/claim' && req.method === 'POST') {
         const user = getOrProvisionUser(req, res, true);
         const rl = checkRateLimit(`payclaim:${user.id}`, 6, 60 * 60 * 1000);
@@ -1054,18 +1055,119 @@ export function createAppServer() {
         });
 
         db.appendAuditLog(user.id, {
-          action: 'PAYMENT_CLAIM_SUBMITTED',
-          detail: `Submitted ₦${payment.amountNaira} ${payment.channel} transfer claim (${payment.reference}) for ${payment.planName}`,
-          severity: 'INFO',
+          action: payment.instantUnlocked
+            ? 'INSTANT_SESSION_ID_UNLOCK'
+            : 'PAYMENT_CLAIM_SUBMITTED',
+          detail: payment.instantUnlocked
+            ? `⚡ Instant 0-Second Unlock (${payment.quotaLabel}) via ${payment.channel} Session ID #${payment.sessionIdLast6} (${payment.reference})`
+            : `Submitted ₦${payment.amountNaira} ${payment.channel} transfer claim (${payment.reference}) for ${payment.planName}`,
+          severity: payment.instantUnlocked ? 'SUCCESS' : 'INFO',
           ip: clientIp
         });
 
         const tgResult = await notifyTelegramAdminOfPayment(payment);
+        const updatedUser = db.getUserById(user.id);
         return sendJson(res, 201, {
           payment,
+          instantUnlocked: Boolean(payment.instantUnlocked),
+          user: sanitizeUserForClient(updatedUser),
           telegramDelivery: tgResult,
-          message: `Transfer claim ${payment.reference} received! Waiting for 1-Tap confirmation.`
+          message: payment.instantUnlocked
+            ? `⚡ Instant Unlock! Your ${payment.quotaLabel} Card is active right now (Ref: ${payment.reference}).`
+            : `Transfer claim ${payment.reference} received! Waiting for confirmation.`
         });
+      }
+
+      // 12b. POST /api/payments/alert-webhook — Automatic OPay/PalmPay SMS/Email/Notification Alert Matcher
+      if (pathname === '/api/payments/alert-webhook' && req.method === 'POST') {
+        if (APP_CONFIG.alertWebhookSecret) {
+          const secretHdr = req.headers['x-alert-secret'] || '';
+          if (secretHdr !== APP_CONFIG.alertWebhookSecret) {
+            return sendJson(res, 403, { error: 'Invalid alert webhook secret' });
+          }
+        }
+        const body = await readJsonBody(req);
+        const matched = db.findMatchingPendingPaymentForAlert({
+          rawText: body.text || body.message || body.alert || '',
+          amountNaira: body.amountNaira || body.amount || 0,
+          senderName: body.senderName || '',
+          reference: body.reference || '',
+          sessionIdLast6: body.sessionIdLast6 || ''
+        });
+        if (!matched) {
+          return sendJson(res, 200, { matched: false, message: 'No matching pending payment claim found' });
+        }
+        const { payment, user } = resolvePaymentAndNotifyUser(matched.id, 'APPROVE');
+        if (user) {
+          db.appendAuditLog(user.id, {
+            action: 'AUTO_ALERT_WEBHOOK_VERIFIED',
+            detail: `Automatic Credit Alert verified ${payment.reference} (₦${payment.amountNaira}) — Receipt ${payment.receiptNumber}`,
+            severity: 'SUCCESS',
+            ip: 'auto-alert-webhook'
+          });
+        }
+        return sendJson(res, 200, {
+          matched: true,
+          payment,
+          user: sanitizeUserForClient(user)
+        });
+      }
+
+      // 12c. POST /api/payments/paystack-webhook — Paystack "Starter Business" Automatic Transfer Webhook
+      if (pathname === '/api/payments/paystack-webhook' && req.method === 'POST') {
+        const chunks = [];
+        for await (const chunk of req) {
+          chunks.push(chunk);
+        }
+        const rawBody = Buffer.concat(chunks).toString('utf-8');
+
+        if (APP_CONFIG.paystack.secretKey) {
+          const signature = req.headers['x-paystack-signature'] || '';
+          const expectedSig = crypto
+            .createHmac('sha512', APP_CONFIG.paystack.secretKey)
+            .update(rawBody)
+            .digest('hex');
+          if (signature !== expectedSig) {
+            return sendJson(res, 403, { error: 'Invalid Paystack HMAC-SHA512 signature' });
+          }
+        }
+
+        let payload = {};
+        try {
+          payload = rawBody ? JSON.parse(rawBody) : {};
+        } catch {
+          return sendJson(res, 400, { error: 'Invalid JSON' });
+        }
+
+        if (payload.event === 'charge.success' && payload.data) {
+          const data = payload.data;
+          const paymentId = data.metadata?.paymentId;
+          const refCode = data.metadata?.reference || data.reference || '';
+          const amountNaira = Math.round(Number(data.amount || 0) / 100);
+
+          let targetPayment = paymentId ? db.getPaymentById(paymentId) : null;
+          if (!targetPayment) {
+            targetPayment = db.findMatchingPendingPaymentForAlert({
+              reference: refCode,
+              amountNaira,
+              senderName: data.customer?.first_name || data.authorization?.sender_name || ''
+            });
+          }
+
+          if (targetPayment) {
+            const { payment, user } = resolvePaymentAndNotifyUser(targetPayment.id, 'APPROVE');
+            if (user) {
+              db.appendAuditLog(user.id, {
+                action: 'PAYSTACK_AUTO_VERIFIED',
+                detail: `Paystack Starter Webhook verified ${payment.reference} (₦${payment.amountNaira}) — Receipt ${payment.receiptNumber}`,
+                severity: 'SUCCESS',
+                ip: 'paystack-webhook'
+              });
+            }
+            return sendJson(res, 200, { verified: true, payment, user: sanitizeUserForClient(user) });
+          }
+        }
+        return sendJson(res, 200, { received: true });
       }
 
       // 13. POST /api/payments/:id/resolve — Admin / Telegram 1-Tap Approve or Reject
@@ -1091,7 +1193,7 @@ export function createAppServer() {
             detail:
               action === 'APPROVE'
                 ? `1-Tap Bot approved ${payment.reference} — Card expanded to ${payment.quotaLabel} (${payment.receiptNumber})`
-                : `Transfer claim ${payment.reference} was declined`,
+                : `Transfer claim ${payment.reference} was declined (any provisional quota revoked)`,
             severity: action === 'APPROVE' ? 'SUCCESS' : 'WARN',
             ip: clientIp
           });

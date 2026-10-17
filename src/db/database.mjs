@@ -689,6 +689,33 @@ export const db = {
       .slice(-8)
       .toUpperCase();
 
+    // Prevent Session ID replay attacks across claims
+    if (cleanedSession6 && cleanedSession6.length >= 6) {
+      const duplicate = Object.values(state.payments).find(
+        (p) => p.sessionIdLast6 === cleanedSession6 && p.status !== 'REJECTED'
+      );
+      if (duplicate) {
+        throw new Error(
+          `DUPLICATE_SESSION_ID: Session ID ending in "${cleanedSession6}" has already been used for a storage claim.`
+        );
+      }
+    }
+
+    const now = new Date();
+    const durationDays = Number(plan.durationDays || 30);
+    const expiresAt = new Date(now.getTime() + durationDays * 24 * 60 * 60 * 1000);
+
+    // Engine 1: Instant 0-Second Optimistic Unlock when user provides a 6+ digit OPay/PalmPay Session ID!
+    const instantUnlocked = Boolean(cleanedSession6 && cleanedSession6.length >= 6);
+    if (instantUnlocked) {
+      user.planId = plan.id;
+      user.planName = plan.name;
+      user.quotaBytes = plan.quotaBytes;
+      user.planActivatedAt = now.toISOString();
+      user.planExpiresAt = expiresAt.toISOString();
+      user.updatedAt = now.toISOString();
+    }
+
     const payment = {
       id,
       reference,
@@ -702,9 +729,10 @@ export const db = {
       channel,
       senderName: senderName.trim() || user.displayName,
       sessionIdLast6: cleanedSession6 || null,
+      instantUnlocked,
       status: 'PENDING',
-      receiptNumber: null,
-      createdAt: new Date().toISOString(),
+      receiptNumber: instantUnlocked ? `NG-PROV-${Date.now().toString().slice(-6)}` : null,
+      createdAt: now.toISOString(),
       resolvedAt: null
     };
 
@@ -740,10 +768,76 @@ export const db = {
     } else {
       payment.status = 'REJECTED';
       payment.resolvedAt = new Date().toISOString();
+      payment.receiptNumber = null;
+
+      // If this claim had triggered an Instant Optimistic Unlock, immediately revoke quota back to Free 5GB!
+      if (user && payment.instantUnlocked) {
+        user.planId = STORAGE_PLANS.free.id;
+        user.planName = STORAGE_PLANS.free.name;
+        user.quotaBytes = STORAGE_PLANS.free.quotaBytes;
+        user.planExpiresAt = null;
+        user.updatedAt = new Date().toISOString();
+      }
     }
 
     persistDatabase();
     return payment;
+  },
+
+  findMatchingPendingPaymentForAlert({
+    rawText = '',
+    amountNaira = 0,
+    senderName = '',
+    reference = '',
+    sessionIdLast6 = ''
+  }) {
+    const pendingList = db.getPendingPayments();
+    if (pendingList.length === 0) return null;
+
+    const upperText = `${rawText} ${reference} ${senderName} ${sessionIdLast6}`.toUpperCase();
+
+    // 1. Direct Reference match (e.g. MC-4821)
+    for (const p of pendingList) {
+      if (p.reference && upperText.includes(p.reference.toUpperCase())) {
+        return p;
+      }
+    }
+
+    // 2. Direct 6-digit Session ID suffix match
+    for (const p of pendingList) {
+      if (
+        p.sessionIdLast6 &&
+        p.sessionIdLast6.length >= 6 &&
+        upperText.includes(p.sessionIdLast6.toUpperCase())
+      ) {
+        return p;
+      }
+    }
+
+    // 3. Extract Naira amount from alert text if not explicitly passed
+    let parsedAmount = Number(amountNaira || 0);
+    if (!parsedAmount && rawText) {
+      const amtMatch = String(rawText).match(/(?:NGN|₦|N)\s*([0-9,]+(?:\.\d{2})?)/i);
+      if (amtMatch) {
+        parsedAmount = Math.round(Number(amtMatch[1].replace(/,/g, '')));
+      }
+    }
+
+    // 4. Match by Amount + Any Sender Name word (even if roommate/parent/POS sent it!)
+    for (const p of pendingList) {
+      const amountMatches = !parsedAmount || p.amountNaira === parsedAmount;
+      if (!amountMatches) continue;
+
+      const senderTokens = String(p.senderName || '')
+        .toUpperCase()
+        .split(/\s+/)
+        .filter((w) => w.length >= 3 && w !== 'CARD' && w !== 'GUEST');
+      if (senderTokens.length > 0 && senderTokens.some((tok) => upperText.includes(tok))) {
+        return p;
+      }
+    }
+
+    return null;
   },
 
   getUserPayments(userId) {

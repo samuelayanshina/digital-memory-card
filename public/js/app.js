@@ -1504,12 +1504,22 @@ window.addEventListener('DOMContentLoaded', async () => {
     }
 
     if (paymentModal) paymentModal.close();
+    if (data.user) {
+      state.user = data.user;
+    }
     state.payments.unshift(data.payment);
     await fetchPendingClaims();
+    renderCardHeader();
     renderPlansAndPayments();
-    showBanner(
-      `Transfer claim ${data.payment.reference} submitted! Click "Approve" in the Telegram Simulator below to test instant unlock.`
-    );
+    if (data.instantUnlocked) {
+      showBanner(
+        `⚡ Instant 0-Second Unlock! Your Memory Card is now expanded to ${data.payment.quotaLabel} (${data.payment.reference}).`
+      );
+    } else {
+      showBanner(
+        `Transfer claim ${data.payment.reference} submitted! Waiting for confirmation.`
+      );
+    }
   });
 
   on('adminPendingClaimsList', 'click', async (e) => {

@@ -948,4 +948,96 @@ test('16. AES-256-CTR Encryption at Rest (HTTP 206 Range Seek), Two-Tier Hot/Col
   assert.ok(healthData.diskHealth && typeof healthData.diskHealth.freeBytes === 'number');
 });
 
+test('17. Triple Zero-Touch Payment Engine: Instant Session ID Unlock, Auto Credit-Alert Webhook & Paystack Webhook', async () => {
+  const sRes = await dispatch('/api/session');
+  const token = (await sRes.json()).user.sessionToken;
+  const uniqueSession6 = String(Math.floor(100000 + Math.random() * 899999));
+
+  // 1. Engine 1: Student's roommate ("Chinedu Roommate") sends ₦500 on OPay & student enters 6-digit Session ID -> 0-Second Instant Unlock!
+  const claimRes = await dispatch('/api/payments/claim', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-card-token': token
+    },
+    body: {
+      planId: 'standard',
+      channel: 'OPay',
+      senderName: 'Chinedu Roommate',
+      sessionIdLast6: uniqueSession6
+    }
+  });
+  assert.equal(claimRes.status, 201);
+  const claimData = await claimRes.json();
+  assert.equal(claimData.instantUnlocked, true);
+  assert.equal(claimData.user.planId, 'standard');
+  assert.equal(claimData.user.quotaBytes, 50 * 1024 * 1024 * 1024);
+
+  // 2. Replay Attack Defense: Reusing the exact same 6-digit Session ID must be blocked!
+  const replayRes = await dispatch('/api/payments/claim', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-card-token': token
+    },
+    body: {
+      planId: 'pro',
+      channel: 'OPay',
+      senderName: 'Chinedu Roommate',
+      sessionIdLast6: uniqueSession6
+    }
+  });
+  assert.equal(replayRes.status, 400);
+
+  // 3. Engine 2: Direct OPay Credit Alert Auto-Parser Webhook automatically matches & finalizes official receipt!
+  const alertWebhookRes = await dispatch('/api/payments/alert-webhook', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: {
+      text: `OPay Credit Alert: NGN 500.00 received from CHINEDU ROOMMATE into 8114587431. Session ID: 10000426${uniqueSession6}`
+    }
+  });
+  assert.equal(alertWebhookRes.status, 200);
+  const alertData = await alertWebhookRes.json();
+  assert.equal(alertData.matched, true);
+  assert.equal(alertData.payment.status, 'APPROVED');
+  assert.ok(alertData.payment.receiptNumber.startsWith('NG-RCPT-'));
+
+  // 4. Engine 3: Paystack Starter Business Webhook (charge.success) auto-verifies a 20GB Student Sachet claim
+  const s2Res = await dispatch('/api/session');
+  const token2 = (await s2Res.json()).user.sessionToken;
+  const claim2Res = await dispatch('/api/payments/claim', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-card-token': token2
+    },
+    body: {
+      planId: 'student',
+      channel: 'Bank Transfer',
+      senderName: 'Bolanle POS'
+    }
+  });
+  const claim2 = (await claim2Res.json()).payment;
+
+  const paystackRes = await dispatch('/api/payments/paystack-webhook', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: {
+      event: 'charge.success',
+      data: {
+        reference: claim2.reference,
+        amount: 25000, // ₦250.00 in kobo
+        metadata: { paymentId: claim2.id, reference: claim2.reference }
+      }
+    }
+  });
+  assert.equal(paystackRes.status, 200);
+  const psData = await paystackRes.json();
+  assert.equal(psData.verified, true);
+  assert.equal(psData.payment.status, 'APPROVED');
+  assert.equal(psData.user.planId, 'student');
+});
+
+
 

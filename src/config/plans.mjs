@@ -112,6 +112,11 @@ export const APP_CONFIG = {
     }
   },
   adminPin: process.env.ADMIN_PIN || '',
+  paystack: {
+    publicKey: process.env.PAYSTACK_PUBLIC_KEY || '',
+    secretKey: process.env.PAYSTACK_SECRET_KEY || ''
+  },
+  alertWebhookSecret: process.env.ALERT_WEBHOOK_SECRET || '',
   telegram: {
     botToken: process.env.TELEGRAM_BOT_TOKEN || '',
     adminChatId: process.env.TELEGRAM_ADMIN_CHAT_ID || '',
