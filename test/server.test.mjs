@@ -1,9 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import zlib from 'node:zlib';
 import { Readable, PassThrough } from 'node:stream';
 import { createAppServer } from '../src/server.mjs';
+import { getBlobPath, getColdBlobPath } from '../src/services/storageEngine.mjs';
 
 const server = createAppServer();
 
@@ -849,4 +851,101 @@ test('15. Anti-Hash-Spoofing Proof-of-Ownership & Private Vault Deduplication Is
   const validProofData = await validProofRes.json();
   assert.equal(validProofData.instantMatch, true);
 });
+
+test('16. AES-256-CTR Encryption at Rest (HTTP 206 Range Seek), Two-Tier Hot/Cold Archival & Scannable QR SVG', async () => {
+  const sRes = await dispatch('/api/session');
+  const token = (await sRes.json()).user.sessionToken;
+
+  // 1. Upload a sensitive file directly into Private Vault
+  const plaintextStr =
+    'TOP_SECRET_BANK_LEDGER_2026_AES_256_CTR_ENCRYPTED_AT_REST_ON_DISK_WITH_RANGE_SEEK_SUPPORT!';
+  const plaintextBuf = Buffer.from(plaintextStr, 'utf-8');
+  const sha = crypto.createHash('sha256').update(plaintextBuf).digest('hex');
+
+  const upRes = await dispatch('/api/files/upload', {
+    method: 'POST',
+    headers: {
+      'x-card-token': token,
+      'x-file-name': 'Encrypted_Vault_Ledger.txt',
+      'x-file-type': 'text/plain',
+      'x-file-folder': 'Private Vault',
+      'x-file-sha256': sha,
+      'x-file-vault': 'true'
+    },
+    body: plaintextBuf
+  });
+  assert.equal(upRes.status, 201);
+  const upData = await upRes.json();
+  assert.equal(upData.encryptedAtRest, true);
+
+  // 2. Inspect physical .blob file on hard drive: must start with CNGENC01 magic header and NOT contain plaintext!
+  const physicalPath = getBlobPath(sha);
+  const rawDiskBytes = fs.readFileSync(physicalPath);
+  assert.equal(rawDiskBytes.subarray(0, 8).toString('utf-8'), 'CNGENC01');
+  assert.equal(rawDiskBytes.includes(Buffer.from('TOP_SECRET_BANK_LEDGER', 'utf-8')), false);
+
+  // 3. Unlock Private Vault with default starter PIN (0000) and stream an unaligned HTTP 206 byte range (bytes=11-34)
+  const unlockRes = await dispatch('/api/auth/verify-pin', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-card-token': token
+    },
+    body: { pin: '0000' }
+  });
+  assert.equal(unlockRes.status, 200);
+  const { vaultToken } = await unlockRes.json();
+
+  const rangeRes = await dispatch(upData.file.streamUrl, {
+    headers: {
+      'x-card-token': token,
+      'x-vault-token': vaultToken,
+      range: 'bytes=11-34'
+    }
+  });
+  assert.equal(rangeRes.status, 206);
+  const decryptedSlice = await rangeRes.text();
+  assert.equal(decryptedSlice, plaintextStr.slice(11, 35));
+
+  // 4. Offload blob from Hot NVMe tier to Cold Archive Storage (POST /api/system/cold-tier/offload)
+  const offloadRes = await dispatch('/api/system/cold-tier/offload', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-card-token': token
+    },
+    body: { fileId: upData.file.id }
+  });
+  assert.equal(offloadRes.status, 200);
+  const offloadData = await offloadRes.json();
+  assert.equal(offloadData.offloaded, true);
+  assert.equal(offloadData.tier, 'COLD_ARCHIVE_STORAGE');
+  assert.equal(fs.existsSync(physicalPath), false);
+  assert.equal(fs.existsSync(getColdBlobPath(sha)), true);
+
+  // 5. Streaming the cold-archived file transparently restores it to Hot NVMe tier and decrypts it!
+  const fullStreamRes = await dispatch(upData.file.streamUrl, {
+    headers: {
+      'x-card-token': token,
+      'x-vault-token': vaultToken
+    }
+  });
+  assert.equal(fullStreamRes.status, 200);
+  assert.equal(await fullStreamRes.text(), plaintextStr);
+  assert.equal(fs.existsSync(physicalPath), true);
+
+  // 6. Verify Zero-Dependency Scannable SVG QR Code Generator & Server Disk Health
+  const qrRes = await dispatch(
+    '/api/system/qr-svg?text=' + encodeURIComponent('http://192.168.3.8:4000')
+  );
+  assert.equal(qrRes.status, 200);
+  assert.ok(qrRes.headers.get('content-type')?.includes('image/svg+xml'));
+  const qrSvg = await qrRes.text();
+  assert.ok(qrSvg.startsWith('<svg ') && qrSvg.includes('<path d="M'));
+
+  const healthRes = await dispatch('/api/health');
+  const healthData = await healthRes.json();
+  assert.ok(healthData.diskHealth && typeof healthData.diskHealth.freeBytes === 'number');
+});
+
 

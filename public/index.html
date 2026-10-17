@@ -385,6 +385,19 @@
           </div>
         </div>
 
+        <div class="surface-card" style="margin-bottom: 1.25rem; display: flex; align-items: center; justify-content: space-between; gap: 1.25rem; flex-wrap: wrap;">
+          <div style="flex: 1; min-width: 240px;">
+            <span class="eyebrow-tag text-emerald">SCAN WITH IPHONE OR ANDROID CAMERA • 0 MB DATA</span>
+            <h3 style="margin-top: 0.25rem;">Instant Hotspot QR Bridge</h3>
+            <p class="helper-caption" style="margin-top: 0.25rem;">
+              Point your phone camera at this QR code while on the same Wi-Fi or personal hotspot to open your Digital Memory Card at <code id="p2pLanUrlDisplay">http://localhost:4000</code> without typing IP numbers.
+            </p>
+          </div>
+          <div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 0.5rem; box-shadow: 0 2px 8px rgba(15,23,42,0.04);">
+            <img id="lanQrCodeImg" src="/api/system/qr-svg" alt="Scan Local Wi-Fi QR Code" width="116" height="116" style="display: block; border-radius: 6px;" />
+          </div>
+        </div>
+
         <div class="p2p-layout">
           <div class="surface-card">
             <h3>1. Pair Nearby Devices</h3>
@@ -500,7 +513,7 @@
         <div class="section-header" style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 1rem;">
           <div>
             <h1>Security & Activity Center</h1>
-            <p>Tamper-evident cryptographic verification, server-enforced PIN Vault status, and real-time access logs for your Digital Memory Card.</p>
+            <p>Tamper-evident cryptographic verification, AES-256-CTR vault encryption at rest, and real-time access logs for your Digital Memory Card.</p>
           </div>
           <button type="button" id="btnRefreshSecurity" class="btn btn-outline btn-sm">
             Refresh Audit Log
@@ -509,10 +522,10 @@
 
         <div class="steps-grid" style="margin-bottom: 1.25rem;">
           <div class="surface-card step-card">
-            <div class="step-os-tag">SHA-256 INTEGRITY</div>
-            <h3>Content-Addressable Storage</h3>
+            <div class="step-os-tag">AES-256-CTR AT REST</div>
+            <h3>Encrypted Vault Blobs</h3>
             <p class="helper-caption">
-              Every uploaded file is verified with a 256-bit cryptographic digest before you delete it from your device.
+              Private Vault files are encrypted at rest on disk with AES-256-CTR and support HTTP 206 byte-range seeking only with a signed PIN token.
             </p>
           </div>
 
@@ -525,10 +538,10 @@
           </div>
 
           <div class="surface-card step-card">
-            <div class="step-os-tag">RATE LIMIT & CSP</div>
-            <h3>Zero-Trust Headers Active</h3>
-            <p class="helper-caption">
-              Protected by HttpOnly session cookies, brute-force PIN throttling, and strict Content-Security-Policy.
+            <div class="step-os-tag">HOT NVME + COLD ARCHIVE</div>
+            <h3 id="secDiskHealthHeading">Two-Tier Storage Healthy</h3>
+            <p class="helper-caption" id="secDiskHealthCaption">
+              Protected by HttpOnly session cookies, DNS-resolved SSRF guards, GZIP bomb circuit-breakers, and Hot/Cold tier auto-restoration.
             </p>
           </div>
         </div>

@@ -335,12 +335,31 @@ export const db = {
     persistDatabase();
   },
 
-  registerOrIncrementBlob({ sha256, sizeBytes, mimeType }) {
+  markBlobColdArchived(sha256, coldCompressedBytes = 0) {
+    const blob = state.blobs[String(sha256 || '').toLowerCase()];
+    if (!blob) return null;
+    blob.tier = 'COLD_ARCHIVE_STORAGE';
+    blob.coldArchivedAt = new Date().toISOString();
+    blob.coldCompressedBytes = Number(coldCompressedBytes || 0);
+    persistDatabase();
+    return blob;
+  },
+
+  markBlobEncryptedAtRest(sha256) {
+    const blob = state.blobs[String(sha256 || '').toLowerCase()];
+    if (!blob) return null;
+    blob.encryptedAtRest = true;
+    persistDatabase();
+    return blob;
+  },
+
+  registerOrIncrementBlob({ sha256, sizeBytes, mimeType, encryptedAtRest = false }) {
     const existing = state.blobs[sha256];
     if (existing) {
       existing.refCount += 1;
       existing.accessCount = (existing.accessCount || 1) + 1;
       existing.lastAccessedAt = new Date().toISOString();
+      if (encryptedAtRest) existing.encryptedAtRest = true;
       state.stats.totalVirtualBytes += sizeBytes;
       state.stats.totalDeduplicatedBytesSaved += sizeBytes;
       state.stats.totalInstantUploadsCount += 1;
@@ -355,6 +374,7 @@ export const db = {
       mimeType: mimeType || 'application/octet-stream',
       refCount: 1,
       tier: 'HOT_LOCAL_NVME',
+      encryptedAtRest: Boolean(encryptedAtRest),
       accessCount: 1,
       lastAccessedAt: now,
       createdAt: now

@@ -173,6 +173,11 @@ function renderSecurityAudit() {
     }
   }
 
+  const diskHeading = document.getElementById('secDiskHealthHeading');
+  if (diskHeading && state.diskHealth) {
+    diskHeading.textContent = `Two-Tier Storage (${state.diskHealth.usedPercent}% Host Disk Used)`;
+  }
+
   const listEl = document.getElementById('securityAuditList');
   if (!listEl) return;
   const logs = state.auditLogs || [];
@@ -255,6 +260,12 @@ function renderCardHeader() {
 
   document.getElementById('webdavUrlInput').value = state.webdavUrl;
   document.getElementById('lanUrlText').textContent = state.lanUrl;
+  const p2pLanEl = document.getElementById('p2pLanUrlDisplay');
+  if (p2pLanEl) p2pLanEl.textContent = state.lanUrl;
+  const qrImg = document.getElementById('lanQrCodeImg');
+  if (qrImg && state.lanUrl) {
+    qrImg.src = `/api/system/qr-svg?text=${encodeURIComponent(state.lanUrl)}`;
+  }
   renderStorageBreakdown();
 }
 
@@ -1029,6 +1040,7 @@ async function loadSession() {
     state.merchant = data.merchant || {};
     state.webdavUrl = data.webdavUrl || '';
     state.lanUrl = data.lanUrl || '';
+    state.diskHealth = data.diskHealth || null;
 
     const opayNum = document.getElementById('opayNumberText');
     const opayName = document.getElementById('opayNameText');

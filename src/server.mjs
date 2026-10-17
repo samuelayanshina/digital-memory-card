@@ -22,7 +22,10 @@ import {
   finalizeUploadSessionAsBlob,
   fetchRemoteUrlAsBlob,
   storeBufferAsBlob,
-  deletePhysicalBlob
+  deletePhysicalBlob,
+  encryptBlobAtRest,
+  offloadBlobToColdArchive,
+  getServerDiskHealth
 } from './services/storageEngine.mjs';
 import {
   signFileStreamToken,
@@ -43,6 +46,7 @@ import {
   scanDeveloperStorageHotspots,
   executeCodeInCardSandbox
 } from './services/macDoctorAndRunner.mjs';
+import { generateQrCodeSvg } from './services/qrGenerator.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.resolve(__dirname, '../public');
@@ -178,8 +182,44 @@ export function createAppServer() {
           uptimeSeconds: Math.round(process.uptime()),
           nodeVersion: process.version,
           memoryRssMB: Math.round((mem.rss / (1024 * 1024)) * 10) / 10,
+          diskHealth: getServerDiskHealth(),
           stats: db.getStats(),
           timestamp: new Date().toISOString()
+        });
+      }
+
+      // 0b. GET /api/system/qr-svg — Zero-Dependency ISO/IEC 18004 Scannable QR Code SVG
+      if (pathname === '/api/system/qr-svg' && req.method === 'GET') {
+        const lanIp = getLocalLanIp();
+        const defaultUrl = `http://${lanIp}:${APP_CONFIG.port}`;
+        const text = urlObj.searchParams.get('text') || defaultUrl;
+        const svg = generateQrCodeSvg(text);
+        res.writeHead(200, {
+          'Content-Type': 'image/svg+xml; charset=utf-8',
+          'Cache-Control': 'public, max-age=300'
+        });
+        return res.end(svg);
+      }
+
+      // 0c. POST /api/system/cold-tier/offload — Two-Tier Hot NVMe -> Cold Archive Storage Offloader
+      if (pathname === '/api/system/cold-tier/offload' && req.method === 'POST') {
+        const user = getOrProvisionUser(req, res, false);
+        if (!user) return sendJson(res, 401, { error: 'Unauthorized' });
+        const body = await readJsonBody(req);
+        const fileId = body.fileId;
+        const sha256 = body.sha256 || (fileId ? db.getFileById(fileId)?.sha256 : null);
+        if (!sha256) {
+          return sendJson(res, 400, { error: 'fileId or sha256 required for Cold Archive offload' });
+        }
+        const offloadInfo = offloadBlobToColdArchive(sha256);
+        const updatedBlob = db.markBlobColdArchived(sha256, offloadInfo.coldCompressedBytes);
+        return sendJson(res, 200, {
+          offloaded: true,
+          sha256,
+          tier: 'COLD_ARCHIVE_STORAGE',
+          coldCompressedBytes: offloadInfo.coldCompressedBytes,
+          blob: updatedBlob,
+          diskHealth: getServerDiskHealth()
         });
       }
 
@@ -205,6 +245,7 @@ export function createAppServer() {
           plans: STORAGE_PLANS,
           merchant: APP_CONFIG.merchant,
           stats: db.getStats(),
+          diskHealth: getServerDiskHealth(),
           webdavUrl: `http://${hostHeader}/webdav/${user.sessionToken}`,
           lanUrl: `http://${lanIp}:${APP_CONFIG.port}`
         });
@@ -452,16 +493,19 @@ export function createAppServer() {
         const qs = db.getQuotaStatus(user.id);
         const remainingQuota = Math.max(0, qs.effectiveQuotaBytes - user.usedBytes);
 
-        const { sha256, sizeBytes, compressionSavedBytes } = await storeStreamAsBlob(req, {
-          maxBytes: remainingQuota,
-          expectedSha256,
-          isGzipCompressed
-        });
+        const { sha256, sizeBytes, compressionSavedBytes, encryptedAtRest } =
+          await storeStreamAsBlob(req, {
+            maxBytes: remainingQuota,
+            expectedSha256,
+            isGzipCompressed,
+            encryptAtRest: isVaultLocked
+          });
 
         const { deduplicated } = db.registerOrIncrementBlob({
           sha256,
           sizeBytes,
-          mimeType
+          mimeType,
+          encryptedAtRest
         });
 
         const fileRecord = db.createFileRecord({
@@ -480,6 +524,7 @@ export function createAppServer() {
         return sendJson(res, 201, {
           deduplicated,
           compressionSavedBytes,
+          encryptedAtRest,
           file: decorateFileWithStreamUrl(fileRecord, user.id),
           user: sanitizeUserForClient(updatedUser),
           breakdown: db.getStorageBreakdown(user.id),
@@ -533,15 +578,17 @@ export function createAppServer() {
         db.updateUploadSessionOffset(session.uploadId, newOffsetBytes);
 
         if (newOffsetBytes >= session.totalSizeBytes) {
-          const { sha256, sizeBytes } = finalizeUploadSessionAsBlob(
+          const { sha256, sizeBytes, encryptedAtRest } = finalizeUploadSessionAsBlob(
             session.uploadId,
-            session.expectedSha256
+            session.expectedSha256,
+            { encryptAtRest: session.isVaultLocked }
           );
           db.completeUploadSession(session.uploadId);
           const { deduplicated } = db.registerOrIncrementBlob({
             sha256,
             sizeBytes,
-            mimeType: session.mimeType
+            mimeType: session.mimeType,
+            encryptedAtRest
           });
           const fileRecord = db.createFileRecord({
             userId: user.id,
@@ -557,6 +604,7 @@ export function createAppServer() {
           return sendJson(res, 200, {
             completed: true,
             offsetBytes: newOffsetBytes,
+            encryptedAtRest,
             file: decorateFileWithStreamUrl(fileRecord, user.id),
             user: sanitizeUserForClient(updatedUser),
             breakdown: db.getStorageBreakdown(user.id)
@@ -588,15 +636,17 @@ export function createAppServer() {
         const qs = db.getQuotaStatus(user.id);
         const remainingQuota = Math.max(0, qs.effectiveQuotaBytes - user.usedBytes);
 
-        const { sha256, sizeBytes, mimeType, inferredName } = await fetchRemoteUrlAsBlob(
-          targetUrl,
-          { maxBytes: remainingQuota }
-        );
+        const { sha256, sizeBytes, mimeType, inferredName, encryptedAtRest } =
+          await fetchRemoteUrlAsBlob(targetUrl, {
+            maxBytes: remainingQuota,
+            encryptAtRest: isVaultLocked
+          });
 
         const { deduplicated } = db.registerOrIncrementBlob({
           sha256,
           sizeBytes,
-          mimeType
+          mimeType,
+          encryptedAtRest
         });
 
         const finalName = customName || inferredName;
@@ -878,7 +928,7 @@ export function createAppServer() {
         return streamFileBlob(req, res, file, { download });
       }
 
-      // 10. PATCH /api/files/:id/vault — Toggle PIN Vault Lock on a File
+      // 10. PATCH /api/files/:id/vault — Toggle PIN Vault Lock on a File (Encrypts Blob at Rest!)
       const vaultMatch = pathname.match(/^\/api\/files\/([^/]+)\/vault$/);
       if (vaultMatch && req.method === 'PATCH') {
         const user = getOrProvisionUser(req, res, false);
@@ -886,8 +936,13 @@ export function createAppServer() {
         const body = await readJsonBody(req);
         const updated = db.toggleFileVault(vaultMatch[1], user.id, body.isVaultLocked);
         if (!updated) return sendJson(res, 404, { error: 'File not found' });
+        if (updated.isVaultLocked) {
+          encryptBlobAtRest(updated.sha256);
+          db.markBlobEncryptedAtRest(updated.sha256);
+        }
         return sendJson(res, 200, {
           file: decorateFileWithStreamUrl(updated, user.id),
+          encryptedAtRest: Boolean(updated.isVaultLocked),
           breakdown: db.getStorageBreakdown(user.id)
         });
       }

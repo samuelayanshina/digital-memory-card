@@ -1,7 +1,10 @@
-import fs from 'node:fs';
 import crypto from 'node:crypto';
 import { APP_CONFIG } from '../config/plans.mjs';
-import { getBlobPath } from './storageEngine.mjs';
+import {
+  hasPhysicalBlob,
+  getLogicalBlobSize,
+  createPlaintextBlobReadStream
+} from './storageEngine.mjs';
 import { acquireStreamSlot } from '../middleware/security.mjs';
 
 export function signFileStreamToken(fileId, userId, ttlSeconds = 7200) {
@@ -34,15 +37,13 @@ export function verifyFileStreamToken(fileId, userId, exp, sig) {
 }
 
 export function streamFileBlob(req, res, fileRecord, { download = false } = {}) {
-  const blobPath = getBlobPath(fileRecord.sha256);
-  if (!fs.existsSync(blobPath)) {
+  if (!hasPhysicalBlob(fileRecord.sha256)) {
     res.writeHead(404, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'Physical storage blob not found' }));
     return;
   }
 
-  const stat = fs.statSync(blobPath);
-  const totalSize = stat.size;
+  const totalSize = getLogicalBlobSize(fileRecord.sha256);
   const mimeType = fileRecord.mimeType || 'application/octet-stream';
   const safeName = encodeURIComponent(fileRecord.name).replace(/['()]/g, escape);
   const disposition = download
@@ -68,7 +69,6 @@ export function streamFileBlob(req, res, fileRecord, { download = false } = {}) 
   if (rangeHeader && rangeHeader.startsWith('bytes=')) {
     const parts = rangeHeader.replace(/bytes=/, '').split('-');
     const start = parseInt(parts[0], 10);
-    // Default 2MB chunk window when end is open, or full requested range
     const requestedEnd = parts[1] ? parseInt(parts[1], 10) : totalSize - 1;
     const end = Math.min(requestedEnd, totalSize - 1);
 
@@ -97,7 +97,7 @@ export function streamFileBlob(req, res, fileRecord, { download = false } = {}) 
       return;
     }
 
-    const stream = fs.createReadStream(blobPath, { start, end });
+    const stream = createPlaintextBlobReadStream(fileRecord.sha256, { start, end });
     stream.on('error', () => {
       releaseSlot();
       if (!res.headersSent) res.writeHead(500);
@@ -122,7 +122,10 @@ export function streamFileBlob(req, res, fileRecord, { download = false } = {}) 
     return;
   }
 
-  const stream = fs.createReadStream(blobPath);
+  const stream = createPlaintextBlobReadStream(fileRecord.sha256, {
+    start: 0,
+    end: totalSize - 1
+  });
   stream.on('error', () => {
     releaseSlot();
     if (!res.headersSent) res.writeHead(500);
