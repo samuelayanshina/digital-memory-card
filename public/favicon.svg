@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <linearGradient id="cardGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#059669" />
+      <stop offset="100%" stop-color="#047857" />
+    </linearGradient>
+  </defs>
+  <!-- Pure White Rounded Tile Background with Subtle Border -->
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="#ffffff" stroke="#e2e8f0" stroke-width="2" />
+  <!-- SD Memory Card Cut-Corner Body -->
+  <path d="M16 10h22l12 12v30a4 4 0 0 1-4 4H16a4 4 0 0 1-4-4V14a4 4 0 0 1 4-4z" fill="url(#cardGrad)" />
+  <!-- Gold Contact Pins -->
+  <rect x="20" y="16" width="3.5" height="9" rx="1.5" fill="#fbbf24" />
+  <rect x="26.5" y="16" width="3.5" height="9" rx="1.5" fill="#fbbf24" />
+  <rect x="33" y="16" width="3.5" height="9" rx="1.5" fill="#fbbf24" />
+  <!-- Crisp White Status Bar Inside Card -->
+  <rect x="20" y="42" width="24" height="4" rx="2" fill="#ffffff" fill-opacity="0.9" />
+</svg>

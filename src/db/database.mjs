@@ -609,23 +609,30 @@ export const db = {
     return breakdown;
   },
 
-  appendAuditLog(userId, { action, detail, severity = 'INFO', ip = '' }) {
+  appendAuditLog(userId, { action, detail, severity = 'INFO', ip = '', userAgent = '' }) {
     if (!userId) return null;
     if (!state.auditLogs) state.auditLogs = {};
     if (!Array.isArray(state.auditLogs[userId])) {
       state.auditLogs[userId] = [];
     }
+    const user = state.users[userId];
     const entry = {
       id: `aud_${crypto.randomBytes(5).toString('hex')}`,
+      userId,
+      cardSerial: user?.cardSerial || 'NG-SD-UNKNOWN',
+      userDisplayName: user?.displayName || 'Guest Card',
+      userPhone: user?.phone || 'Guest',
+      deviceOs: user?.lastDeviceOs || 'Browser',
+      browser: user?.lastBrowser || 'Web',
       action,
       detail,
       severity,
-      ip: ip ? String(ip).replace(/(\.\d+)$/, '.xxx') : 'local',
+      ip: ip ? String(ip).replace(/(\.\d+)$/, '.xxx') : user?.lastIp || 'local',
       createdAt: new Date().toISOString()
     };
     state.auditLogs[userId].unshift(entry);
     if (state.auditLogs[userId].length > 80) {
-      state.auditLogs[userId].slice(0, 80);
+      state.auditLogs[userId] = state.auditLogs[userId].slice(0, 80);
     }
     persistDatabase();
     return entry;
@@ -970,5 +977,171 @@ export const db = {
     share.claimsCount = (share.claimsCount || 0) + 1;
     persistDatabase();
     return { file: clonedFile, share };
+  },
+
+  recordUserDeviceTelemetry(userId, { ip = '', userAgent = '', isLogin = false } = {}) {
+    const user = state.users[userId];
+    if (!user) return null;
+
+    const ua = String(userAgent || '');
+    let deviceOs = 'Desktop / Web';
+    if (/iPhone|iPad|iPod/i.test(ua)) deviceOs = 'iPhone / iOS';
+    else if (/Android/i.test(ua)) deviceOs = 'Android Phone';
+    else if (/Macintosh|Mac OS X/i.test(ua)) deviceOs = 'MacBook / macOS';
+    else if (/Windows/i.test(ua)) deviceOs = 'Windows PC';
+    else if (/Darwin|WebDAVFS|Microsoft-WebDAV/i.test(ua)) deviceOs = 'Mounted OS Drive (WebDAV)';
+    else if (/Linux/i.test(ua)) deviceOs = 'Linux';
+
+    let browser = 'Browser';
+    if (/Edg\//i.test(ua)) browser = 'Edge';
+    else if (/OPR\/|Opera/i.test(ua)) browser = 'Opera';
+    else if (/Chrome\//i.test(ua) && !/Edg\//i.test(ua)) browser = 'Chrome';
+    else if (/Safari\//i.test(ua) && !/Chrome\//i.test(ua)) browser = 'Safari';
+    else if (/Firefox\//i.test(ua)) browser = 'Firefox';
+    else if (/WebDAV/i.test(ua)) browser = 'Finder / Explorer';
+
+    const maskedIp = ip ? String(ip).replace(/(\.\d+)$/, '.xxx') : user.lastIp || '127.0.0.xxx';
+
+    user.lastDeviceOs = deviceOs;
+    user.lastBrowser = browser;
+    user.lastIp = maskedIp;
+    user.lastActiveAt = new Date().toISOString();
+    user.sessionCount = (user.sessionCount || 0) + (isLogin ? 1 : 0);
+    if (!user.sessionCount) user.sessionCount = 1;
+    persistDatabase();
+    return user;
+  },
+
+  adminSetUserPlan(userId, planId) {
+    const user = state.users[userId];
+    const plan = STORAGE_PLANS[planId];
+    if (!user || !plan) throw new Error('Valid user and plan required');
+
+    const now = new Date();
+    const durationDays = Number(plan.durationDays || 30);
+    const expiresAt = new Date(now.getTime() + durationDays * 24 * 60 * 60 * 1000);
+
+    user.planId = plan.id;
+    user.planName = plan.name;
+    user.quotaBytes = plan.quotaBytes;
+    user.planActivatedAt = now.toISOString();
+    user.planExpiresAt = plan.id === 'free' ? null : expiresAt.toISOString();
+    user.updatedAt = now.toISOString();
+    persistDatabase();
+    return user;
+  },
+
+  getAdminPlatformOverview() {
+    const allUsers = Object.values(state.users);
+    const allFiles = Object.values(state.files).filter((f) => !f.isTrashed);
+    const allPayments = Object.values(state.payments).sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+
+    // Count files per user
+    const fileCountsByUser = {};
+    for (const f of allFiles) {
+      fileCountsByUser[f.userId] = (fileCountsByUser[f.userId] || 0) + 1;
+    }
+
+    let lockedCardsCount = 0;
+    let paidCardsCount = 0;
+    let totalSavedDataBytes = 0;
+    const deviceOrigins = {
+      'iPhone / iOS': 0,
+      'Android Phone': 0,
+      'MacBook / macOS': 0,
+      'Windows PC': 0,
+      'Desktop / Web': 0
+    };
+    const planBreakdown = {
+      free: 0,
+      student: 0,
+      standard: 0,
+      pro: 0
+    };
+
+    const userRows = allUsers
+      .map((u) => {
+        if (u.isLockedToPhone) lockedCardsCount += 1;
+        if (u.planId && u.planId !== 'free') paidCardsCount += 1;
+        totalSavedDataBytes += Number(u.savedDataBytes || 0);
+        const devKey = u.lastDeviceOs || 'Desktop / Web';
+        deviceOrigins[devKey] = (deviceOrigins[devKey] || 0) + 1;
+        planBreakdown[u.planId || 'free'] = (planBreakdown[u.planId || 'free'] || 0) + 1;
+
+        return {
+          id: u.id,
+          cardSerial: u.cardSerial,
+          displayName: u.displayName,
+          phone: u.phone || 'Guest (Unlinked)',
+          isLockedToPhone: Boolean(u.isLockedToPhone),
+          planId: u.planId,
+          planName: u.planName,
+          usedBytes: u.usedBytes || 0,
+          quotaBytes: u.quotaBytes || STORAGE_PLANS.free.quotaBytes,
+          savedDataBytes: u.savedDataBytes || 0,
+          filesCount: fileCountsByUser[u.id] || 0,
+          lastDeviceOs: u.lastDeviceOs || 'Desktop / Web',
+          lastBrowser: u.lastBrowser || 'Browser',
+          lastIp: u.lastIp || 'local',
+          sessionCount: u.sessionCount || 1,
+          lastActiveAt: u.lastActiveAt || u.updatedAt || u.createdAt,
+          createdAt: u.createdAt
+        };
+      })
+      .sort((a, b) => new Date(b.lastActiveAt).getTime() - new Date(a.lastActiveAt).getTime());
+
+    let approvedRevenueNaira = 0;
+    let pendingClaimsCount = 0;
+    let instantUnlockedCount = 0;
+    for (const p of allPayments) {
+      if (p.status === 'APPROVED') {
+        approvedRevenueNaira += Number(p.amountNaira || 0);
+      } else if (p.status === 'PENDING') {
+        pendingClaimsCount += 1;
+        if (p.instantUnlocked) instantUnlockedCount += 1;
+      }
+    }
+
+    // Aggregate global audit logs across all cards
+    const globalAuditLogs = [];
+    for (const [uid, logs] of Object.entries(state.auditLogs || {})) {
+      const owner = state.users[uid];
+      for (const item of logs || []) {
+        globalAuditLogs.push({
+          ...item,
+          cardSerial: item.cardSerial || owner?.cardSerial || 'NG-SD-CARD',
+          userDisplayName: item.userDisplayName || owner?.displayName || 'Guest Card',
+          userPhone: item.userPhone || owner?.phone || 'Guest',
+          deviceOs: item.deviceOs || owner?.lastDeviceOs || 'Browser'
+        });
+      }
+    }
+    globalAuditLogs.sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+
+    return {
+      kpis: {
+        totalCards: allUsers.length,
+        lockedCardsCount,
+        guestCardsCount: Math.max(0, allUsers.length - lockedCardsCount),
+        paidCardsCount,
+        approvedRevenueNaira,
+        pendingClaimsCount,
+        instantUnlockedCount,
+        totalFilesCount: allFiles.length,
+        virtualBytesUsed: state.stats.totalVirtualBytes || 0,
+        physicalBytesOnDisk: state.stats.totalPhysicalBytes || 0,
+        totalDataSavedBytes:
+          Math.max(totalSavedDataBytes, state.stats.totalDeduplicatedBytesSaved || 0)
+      },
+      deviceOrigins,
+      planBreakdown,
+      users: userRows.slice(0, 100),
+      payments: allPayments.slice(0, 60),
+      globalAuditLogs: globalAuditLogs.slice(0, 80)
+    };
   }
 };

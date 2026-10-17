@@ -1039,5 +1039,60 @@ test('17. Triple Zero-Touch Payment Engine: Instant Session ID Unlock, Auto Cred
   assert.equal(psData.user.planId, 'student');
 });
 
+test('18. Brand Favicon (/favicon.svg & /favicon.ico) & Founder Admin Operations Command Center (PIN 9934, Device/Login Origins, 1-Click Plan Override)', async () => {
+  // 1. Verify Brand Favicon routes
+  const favSvg = await dispatch('/favicon.svg');
+  assert.equal(favSvg.status, 200);
+  assert.ok(favSvg.headers.get('content-type')?.includes('image/svg+xml'));
+  const favText = await favSvg.text();
+  assert.ok(favText.includes('<svg') && favText.includes('#059669'));
 
+  const favIco = await dispatch('/favicon.ico');
+  assert.equal(favIco.status, 200);
+  assert.ok(favIco.headers.get('content-type')?.includes('image/svg+xml'));
 
+  // 2. Simulate an iPhone Safari user connecting to CardNG so Device/OS & Browser origin telemetry is recorded
+  const iphoneSessionRes = await dispatch('/api/session', {
+    headers: {
+      'user-agent':
+        'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1',
+      'x-forwarded-for': '102.89.42.19'
+    }
+  });
+  assert.equal(iphoneSessionRes.status, 200);
+  const iphoneUser = (await iphoneSessionRes.json()).user;
+  assert.equal(iphoneUser.lastDeviceOs, 'iPhone / iOS');
+  assert.equal(iphoneUser.lastBrowser, 'Safari');
+  assert.equal(iphoneUser.lastIp, '102.89.42.xxx');
+
+  // 3. Unauthenticated request to /api/admin/overview must be blocked (403)
+  const unauthAdmin = await dispatch('/api/admin/overview');
+  assert.equal(unauthAdmin.status, 403);
+
+  // 4. Authenticated request with Founder Admin PIN (9934) returns full telemetry, device origins, users, payments & global audit stream
+  const adminRes = await dispatch('/api/admin/overview', {
+    headers: { 'x-admin-pin': '9934' }
+  });
+  assert.equal(adminRes.status, 200);
+  const adminData = await adminRes.json();
+  assert.ok(adminData.kpis.totalCards >= 1);
+  assert.ok(adminData.deviceOrigins['iPhone / iOS'] >= 1);
+  assert.ok(Array.isArray(adminData.users) && adminData.users.length >= 1);
+  assert.ok(Array.isArray(adminData.payments));
+  assert.ok(Array.isArray(adminData.globalAuditLogs) && adminData.globalAuditLogs.length >= 1);
+  assert.ok(adminData.diskHealth && typeof adminData.diskHealth.freeBytes === 'number');
+
+  // 5. Founder Admin 1-Click Manual Plan Upgrade (/api/admin/users/:id/plan)
+  const upgradeRes = await dispatch(`/api/admin/users/${iphoneUser.id}/plan`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-admin-pin': '9934'
+    },
+    body: { planId: 'pro' }
+  });
+  assert.equal(upgradeRes.status, 200);
+  const upgradeData = await upgradeRes.json();
+  assert.equal(upgradeData.user.planId, 'pro');
+  assert.equal(upgradeData.user.quotaBytes, 150 * 1024 * 1024 * 1024);
+});

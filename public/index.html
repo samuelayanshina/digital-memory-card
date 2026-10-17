@@ -7,8 +7,11 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <title>CardNG — Digital Memory Card</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="shortcut icon" href="/favicon.svg" />
+  <link rel="apple-touch-icon" href="/icons/icon-192.svg" />
   <link rel="manifest" href="/manifest.json" />
-  <link rel="stylesheet" href="/css/styles.css?v=6" />
+  <link rel="stylesheet" href="/css/styles.css?v=7" />
 </head>
 <body>
   <div class="app-shell">
@@ -126,6 +129,13 @@
                 <rect x="1" y="4" width="22" height="16" rx="2" ry="2"/><line x1="1" y1="10" x2="23" y2="10"/>
               </svg>
               <span>Storage Plans</span>
+            </button>
+
+            <button class="nav-item" data-view="view-admin">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>
+              </svg>
+              <span>Founder Admin</span>
             </button>
           </nav>
         </div>
@@ -552,6 +562,121 @@
             <span class="eyebrow-tag">TAMPER-EVIDENT AUDIT TRAIL</span>
           </div>
           <div id="securityAuditList" class="ledger-list"></div>
+        </div>
+      </section>
+
+      <!-- VIEW 7: FOUNDER ADMIN COMMAND CENTER (OPERATIONS, REVENUE & DEVICE ORIGINS) -->
+      <section id="view-admin" class="view-section">
+        <div class="section-header" style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 1rem;">
+          <div>
+            <h1>Founder Admin Command Center</h1>
+            <p>Live platform operations, Naira revenue ledger, active user device/OS origins (iPhone, Android, Mac, Windows), and global audit logs.</p>
+          </div>
+          <div style="display: flex; gap: 0.5rem;">
+            <button type="button" id="btnRefreshAdminDashboard" class="btn btn-primary btn-sm">
+              Refresh Live Telemetry
+            </button>
+            <button type="button" id="btnLockAdminSession" class="btn btn-outline btn-sm">
+              Lock Console
+            </button>
+          </div>
+        </div>
+
+        <!-- PIN Gate Card (Shown when Admin PIN 9934 is not yet unlocked in browser) -->
+        <div id="adminPinGateCard" class="surface-card" style="text-align: center; padding: 3rem 1.5rem; margin-bottom: 1.25rem;">
+          <span class="eyebrow-tag text-emerald">FOUNDER AUTHORIZATION REQUIRED</span>
+          <h3 style="margin: 0.35rem 0;">Enter 4-Digit Founder Admin PIN</h3>
+          <p class="helper-caption" style="max-width: 420px; margin: 0 auto 1.25rem;">
+            Protected by your personal Founder Admin PIN to view live platform cards, device/IP origins, Naira revenue, and global operations.
+          </p>
+          <div style="display: flex; gap: 0.5rem; justify-content: center; max-width: 300px; margin: 0 auto;">
+            <input type="password" id="adminConsolePinInput" class="input mono" placeholder="4-Digit PIN" maxlength="8" inputmode="numeric" />
+            <button type="button" id="btnUnlockAdminConsole" class="btn btn-primary">Unlock Console</button>
+          </div>
+        </div>
+
+        <!-- Unlocked Founder Command Center Content -->
+        <div id="adminConsoleContent" class="hidden">
+          <!-- Executive KPI Strip -->
+          <div class="telemetry-strip" style="margin-bottom: 1.25rem;">
+            <div class="telemetry-item">
+              <span class="telemetry-label">Total Memory Cards</span>
+              <strong class="telemetry-val" id="admTotalCards">0</strong>
+            </div>
+            <div class="telemetry-divider"></div>
+            <div class="telemetry-item">
+              <span class="telemetry-label">Phone-Locked / Paid</span>
+              <strong class="telemetry-val text-emerald" id="admLockedAndPaid">0 / 0</strong>
+            </div>
+            <div class="telemetry-divider"></div>
+            <div class="telemetry-item">
+              <span class="telemetry-label">Approved Revenue</span>
+              <strong class="telemetry-val text-emerald" id="admRevenueNaira">₦0</strong>
+            </div>
+            <div class="telemetry-divider"></div>
+            <div class="telemetry-item">
+              <span class="telemetry-label">Virtual vs Physical Disk</span>
+              <strong class="telemetry-val" id="admStorageEfficiency">0 B / 0 B</strong>
+            </div>
+            <div class="telemetry-divider"></div>
+            <div class="telemetry-item">
+              <span class="telemetry-label">User Data Saved</span>
+              <strong class="telemetry-val text-emerald" id="admTotalDataSaved">0 B</strong>
+            </div>
+          </div>
+
+          <!-- Device / OS Login Origins & Plan Distribution -->
+          <div class="steps-grid" style="margin-bottom: 1.25rem;">
+            <div class="surface-card step-card">
+              <div class="step-os-tag">WHERE USERS LOG IN FROM</div>
+              <h3>Device & OS Origins</h3>
+              <div id="admDeviceOriginsList" class="ledger-list" style="margin-top: 0.75rem;"></div>
+            </div>
+
+            <div class="surface-card step-card">
+              <div class="step-os-tag">SUBSCRIPTION TIERS</div>
+              <h3>Active Card Plans</h3>
+              <div id="admPlanBreakdownList" class="ledger-list" style="margin-top: 0.75rem;"></div>
+            </div>
+
+            <div class="surface-card step-card">
+              <div class="step-os-tag">SERVER NVME & SETTLEMENT</div>
+              <h3 id="admDiskStatusTitle">Host Storage Healthy</h3>
+              <p class="helper-caption" id="admDiskStatusDetail" style="margin-top: 0.35rem;"></p>
+              <div class="status-callout" style="margin-top: 0.75rem; font-size: 0.8rem;">
+                OPay / PalmPay Settlement:<br />
+                <strong>8114587431 (MAYORKUN SAMUEL AYANSHINA)</strong>
+              </div>
+            </div>
+          </div>
+
+          <!-- Active Cards & Device Origin Directory -->
+          <div class="surface-card" style="margin-bottom: 1.25rem;">
+            <div class="card-title-row">
+              <h3>All Digital Memory Cards & Device/IP Origins</h3>
+              <span class="eyebrow-tag">LIVE USER DIRECTORY & PLAN CONTROL</span>
+            </div>
+            <div id="admUsersDirectoryList" class="ledger-list"></div>
+          </div>
+
+          <!-- Two-Column Bottom: All Payment Claims + Global Security & Operations Stream -->
+          <div class="billing-bottom-grid">
+            <div class="surface-card">
+              <div class="card-title-row">
+                <h3>All Transfer Claims & Instant Unlocks</h3>
+                <span class="eyebrow-tag">1-CLICK APPROVAL / REVOKE</span>
+              </div>
+              <div id="admAllPaymentsList" class="ledger-list"></div>
+            </div>
+
+            <div class="surface-card">
+              <div class="card-title-row">
+                <h3>Global Operations & Login Stream</h3>
+                <span class="eyebrow-tag">ALL CARDS REAL-TIME FEED</span>
+              </div>
+              <div id="admGlobalAuditList" class="ledger-list"></div>
+            </div>
+          </div>
         </div>
       </section>
     </div>

@@ -340,6 +340,11 @@ export function sanitizeUserForClient(user) {
     quotaStatus,
     usedBytes: user.usedBytes,
     savedDataBytes: user.savedDataBytes || 0,
+    lastDeviceOs: user.lastDeviceOs || 'Desktop / Web',
+    lastBrowser: user.lastBrowser || 'Browser',
+    lastIp: user.lastIp || '127.0.0.xxx',
+    sessionCount: user.sessionCount || 1,
+    lastActiveAt: user.lastActiveAt || user.createdAt,
     createdAt: user.createdAt
   };
 }

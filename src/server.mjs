@@ -228,6 +228,10 @@ export function createAppServer() {
       // 1. GET /api/session — Zero-Login Instant Card Provisioning
       if (pathname === '/api/session' && req.method === 'GET') {
         const user = getOrProvisionUser(req, res, true);
+        db.recordUserDeviceTelemetry(user.id, {
+          ip: clientIp,
+          userAgent: req.headers['user-agent'] || ''
+        });
         const files = db
           .getUserFiles(user.id)
           .map((f) => decorateFileWithStreamUrl(f, user.id));
@@ -283,6 +287,11 @@ export function createAppServer() {
           phone: body.phone,
           pin: body.pin,
           displayName: body.displayName
+        });
+        db.recordUserDeviceTelemetry(user.id, {
+          ip: clientIp,
+          userAgent: req.headers['user-agent'] || '',
+          isLogin: true
         });
         db.appendAuditLog(user.id, {
           action: 'CARD_LOCKED_TO_PHONE',
@@ -349,9 +358,14 @@ export function createAppServer() {
           });
         }
         setSessionCookie(res, restoredUser.sessionToken);
+        db.recordUserDeviceTelemetry(restoredUser.id, {
+          ip: clientIp,
+          userAgent: req.headers['user-agent'] || '',
+          isLogin: true
+        });
         db.appendAuditLog(restoredUser.id, {
           action: 'CARD_RESTORED_ON_DEVICE',
-          detail: `Cross-device login succeeded for ${restoredUser.cardSerial}`,
+          detail: `Cross-device login succeeded for ${restoredUser.cardSerial} (${restoredUser.lastDeviceOs || 'Device'})`,
           severity: 'INFO',
           ip: clientIp
         });
@@ -1249,6 +1263,52 @@ export function createAppServer() {
         });
       }
 
+      // 14b. GET /api/admin/overview — Founder Admin Operations, Revenue & Device Origin Command Center
+      if (pathname === '/api/admin/overview' && req.method === 'GET') {
+        const requiredAdminPin = APP_CONFIG.adminPin || '9934';
+        const providedPin =
+          req.headers['x-admin-pin'] || urlObj.searchParams.get('adminPin') || '';
+        if (!providedPin || String(providedPin) !== String(requiredAdminPin)) {
+          return sendJson(res, 403, {
+            error: 'ADMIN_PIN_REQUIRED: Enter your 4-digit Founder Admin PIN to access platform telemetry.'
+          });
+        }
+        const overview = db.getAdminPlatformOverview();
+        return sendJson(res, 200, {
+          ...overview,
+          diskHealth: getServerDiskHealth(),
+          plans: STORAGE_PLANS,
+          merchant: APP_CONFIG.merchant,
+          timestamp: new Date().toISOString()
+        });
+      }
+
+      // 14c. POST /api/admin/users/:id/plan — Founder 1-Click Manual Card Upgrade / Plan Control
+      const adminPlanMatch = pathname.match(/^\/api\/admin\/users\/([^/]+)\/plan$/);
+      if (adminPlanMatch && req.method === 'POST') {
+        const requiredAdminPin = APP_CONFIG.adminPin || '9934';
+        const body = await readJsonBody(req);
+        const providedPin = req.headers['x-admin-pin'] || body.adminPin || '';
+        if (!providedPin || String(providedPin) !== String(requiredAdminPin)) {
+          return sendJson(res, 403, { error: 'Valid Founder Admin PIN required.' });
+        }
+        const targetUserId = adminPlanMatch[1];
+        const updatedUser = db.adminSetUserPlan(targetUserId, body.planId);
+        db.appendAuditLog(targetUserId, {
+          action: 'FOUNDER_MANUAL_PLAN_UPDATE',
+          detail: `Founder Admin updated card ${updatedUser.cardSerial} to ${updatedUser.planName}`,
+          severity: 'SUCCESS',
+          ip: clientIp
+        });
+        pushToUser(targetUserId, {
+          type: 'FILES_UPDATED'
+        });
+        return sendJson(res, 200, {
+          user: sanitizeUserForClient(updatedUser),
+          message: `Updated ${updatedUser.cardSerial} to ${updatedUser.planName}`
+        });
+      }
+
       // 15. Local Wi-Fi Zero-Data P2P Transfer Endpoints
       const p2pRoomMatch = pathname.match(/^\/api\/p2p\/room\/([^/]+)$/);
       if (p2pRoomMatch && req.method === 'GET') {
@@ -1272,8 +1332,13 @@ export function createAppServer() {
         return res.end();
       }
 
-      // Serve Static Frontend PWA Files
-      let safePath = pathname === '/' ? '/index.html' : pathname;
+      // Serve Static Frontend PWA Files (Map /favicon.ico -> /favicon.svg)
+      let safePath =
+        pathname === '/'
+          ? '/index.html'
+          : pathname === '/favicon.ico'
+            ? '/favicon.svg'
+            : pathname;
       safePath = path.normalize(safePath).replace(/^(\.\.(\/|\\|$))+/, '');
       const fullPath = path.join(PUBLIC_DIR, safePath);
 

@@ -132,6 +132,8 @@ function switchView(viewId, folder = null) {
     runMacStorageDoctorScan();
   } else if (viewId === 'view-security') {
     renderSecurityAudit();
+  } else if (viewId === 'view-admin') {
+    loadAdminConsole();
   }
 }
 
@@ -910,6 +912,232 @@ function renderAdminPendingClaims() {
     .join('');
 }
 
+async function loadAdminConsole() {
+  const gateCard = document.getElementById('adminPinGateCard');
+  const contentBox = document.getElementById('adminConsoleContent');
+  if (!gateCard || !contentBox) return;
+
+  const savedPin = localStorage.getItem('cardng_admin_pin') || '';
+  if (!savedPin) {
+    gateCard.classList.remove('hidden');
+    contentBox.classList.add('hidden');
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/admin/overview', {
+      headers: { 'x-admin-pin': savedPin },
+      cache: 'no-store'
+    });
+    if (res.status === 403) {
+      localStorage.removeItem('cardng_admin_pin');
+      gateCard.classList.remove('hidden');
+      contentBox.classList.add('hidden');
+      showBanner('Invalid 4-digit Founder Admin PIN.', true);
+      return;
+    }
+    if (!res.ok) return;
+    const data = await res.json();
+    gateCard.classList.add('hidden');
+    contentBox.classList.remove('hidden');
+    renderAdminConsole(data);
+  } catch {
+    // Ignore
+  }
+}
+
+function renderAdminConsole(data) {
+  const kpis = data.kpis || {};
+  const setTxt = (id, txt) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = txt;
+  };
+
+  setTxt('admTotalCards', String(kpis.totalCards || 0));
+  setTxt(
+    'admLockedAndPaid',
+    `${kpis.lockedCardsCount || 0} Phone-Locked · ${kpis.paidCardsCount || 0} Paid Plans`
+  );
+  setTxt('admRevenueNaira', `₦${Number(kpis.approvedRevenueNaira || 0).toLocaleString()}`);
+  setTxt(
+    'admPendingAndInstant',
+    `${kpis.pendingClaimsCount || 0} Pending · ${kpis.instantUnlockedCount || 0} Instant Unlocks`
+  );
+  setTxt(
+    'admStorageEfficiency',
+    `${formatBytes(kpis.virtualBytesUsed || 0)} / ${formatBytes(kpis.physicalBytesOnDisk || 0)}`
+  );
+  setTxt('admTotalDataSaved', formatBytes(kpis.totalDataSavedBytes || 0));
+
+  if (data.diskHealth) {
+    setTxt(
+      'admDiskStatusTitle',
+      `Host Disk: ${data.diskHealth.usedPercent}% Used (${formatBytes(data.diskHealth.freeBytes)} Free)`
+    );
+    setTxt(
+      'admDiskStatusDetail',
+      `Total Host Capacity: ${formatBytes(data.diskHealth.totalBytes)} · Cold Archive Ready: ${formatBytes(
+        data.diskHealth.coldTierBytes || 0
+      )}`
+    );
+  }
+
+  const originsEl = document.getElementById('admDeviceOriginsList');
+  if (originsEl) {
+    const rawOrigins = data.deviceOrigins || {};
+    const entries = Array.isArray(rawOrigins)
+      ? rawOrigins
+      : Object.entries(rawOrigins)
+          .filter(([, count]) => count > 0)
+          .map(([deviceOs, sessions]) => ({ deviceOs, sessions }));
+    if (entries.length === 0) {
+      originsEl.innerHTML = `<p class="helper-caption">No device telemetry recorded yet.</p>`;
+    } else {
+      originsEl.innerHTML = entries
+        .map(
+          (o) => `
+        <div class="claim-item">
+          <div>
+            <strong>${escapeHtml(o.deviceOs)}</strong>
+          </div>
+          <span class="safe-badge">${o.sessions} active card(s)</span>
+        </div>
+      `
+        )
+        .join('');
+    }
+  }
+
+  const planBdEl = document.getElementById('admPlanBreakdownList');
+  if (planBdEl) {
+    const pb = data.planBreakdown || {};
+    planBdEl.innerHTML = `
+      <span class="safe-badge" style="background: #f1f5f9; color: #334155;">Free 5GB: ${pb.free || 0}</span>
+      <span class="safe-badge">Student 20GB: ${pb.student || 0}</span>
+      <span class="safe-badge">Standard 50GB: ${pb.standard || 0}</span>
+      <span class="safe-badge">Pro 150GB: ${pb.pro || 0}</span>
+    `;
+  }
+
+  const usersEl = document.getElementById('admUsersDirectoryList');
+  const usersCountPill = document.getElementById('admUsersCountPill');
+  const users = data.users || [];
+  if (usersCountPill) usersCountPill.textContent = `${users.length} Cards`;
+  if (usersEl) {
+    usersEl.innerHTML = users
+      .map(
+        (u) => `
+      <div class="claim-item" style="flex-wrap: wrap; gap: 0.75rem;">
+        <div>
+          <div style="display: flex; align-items: center; gap: 0.45rem; flex-wrap: wrap;">
+            <strong>${escapeHtml(u.displayName)}</strong>
+            <code class="mono" style="font-size: 0.75rem;">${escapeHtml(u.cardSerial)}</code>
+            ${
+              u.isLockedToPhone
+                ? `<span class="safe-badge">${escapeHtml(u.phone)}</span>`
+                : `<span class="safe-badge" style="background: #f1f5f9; color: #64748b;">Guest Card</span>`
+            }
+          </div>
+          <div class="file-meta" style="margin-top: 0.25rem;">
+            Origin: <strong>${escapeHtml(u.lastDeviceOs)}</strong> (${escapeHtml(
+              u.lastBrowser
+            )}) · IP <code>${escapeHtml(u.lastIp)}</code> · Sessions: ${u.sessionCount || 1} · Active ${new Date(
+              u.lastActiveAt
+            ).toLocaleTimeString()}
+          </div>
+          <div class="file-meta">
+            Used: <strong>${formatBytes(u.usedBytes)}</strong> of ${formatBytes(
+              u.quotaBytes
+            )} (${u.filesCount || 0} files) · Data Saved: ${formatBytes(u.savedDataBytes)}
+          </div>
+        </div>
+        <div style="display: flex; align-items: center; gap: 0.45rem;">
+          <select class="select-sm" data-admin-user-plan="${escapeHtml(u.id)}" aria-label="Change user plan">
+            <option value="free" ${u.planId === 'free' ? 'selected' : ''}>Free (5 GB)</option>
+            <option value="student" ${u.planId === 'student' ? 'selected' : ''}>Student (20 GB)</option>
+            <option value="standard" ${u.planId === 'standard' ? 'selected' : ''}>Standard (50 GB)</option>
+            <option value="pro" ${u.planId === 'pro' ? 'selected' : ''}>Pro (150 GB)</option>
+          </select>
+        </div>
+      </div>
+    `
+      )
+      .join('');
+  }
+
+  const paymentsEl = document.getElementById('admAllPaymentsList');
+  const payments = data.payments || [];
+  if (paymentsEl) {
+    if (payments.length === 0) {
+      paymentsEl.innerHTML = `<p class="helper-caption">No transfers or instant unlocks recorded yet.</p>`;
+    } else {
+      paymentsEl.innerHTML = payments
+        .map(
+          (p) => `
+        <div class="claim-item" style="flex-wrap: wrap; gap: 0.65rem;">
+          <div>
+            <strong>${escapeHtml(p.reference)} · ₦${Number(p.amountNaira).toLocaleString()} (${escapeHtml(
+              p.quotaLabel
+            )})</strong>
+            <div class="file-meta">
+              Sender: <strong>${escapeHtml(p.senderName)}</strong> via ${escapeHtml(
+                p.channel
+              )} · Card <code>${escapeHtml(p.cardSerial)}</code>
+              ${p.sessionIdLast6 ? ` · Session #<code>${escapeHtml(p.sessionIdLast6)}</code>` : ''}
+              ${p.instantUnlocked ? ` · <span style="color: var(--emerald-primary); font-weight: 600;">⚡ Instant Unlocked</span>` : ''}
+            </div>
+          </div>
+          <div style="display: flex; align-items: center; gap: 0.4rem;">
+            ${
+              p.status === 'PENDING'
+                ? `
+              <button class="btn btn-primary btn-xs" data-resolve-id="${p.id}" data-resolve-action="APPROVE">Confirm</button>
+              <button class="btn btn-danger btn-xs" data-resolve-id="${p.id}" data-resolve-action="REJECT">Reject & Revoke</button>
+            `
+                : `<span class="safe-badge" style="${
+                    p.status === 'APPROVED' ? '' : 'background: #fef2f2; color: #dc2626;'
+                  }">${escapeHtml(p.status)}</span>`
+            }
+          </div>
+        </div>
+      `
+        )
+        .join('');
+    }
+  }
+
+  const auditEl = document.getElementById('admGlobalAuditList');
+  const logs = data.globalAuditLogs || [];
+  if (auditEl) {
+    if (logs.length === 0) {
+      auditEl.innerHTML = `<p class="helper-caption">No operations recorded yet.</p>`;
+    } else {
+      auditEl.innerHTML = logs
+        .map(
+          (entry) => `
+        <div class="claim-item">
+          <div>
+            <strong>${escapeHtml(entry.action)}</strong> · <span class="helper-caption">${escapeHtml(
+              entry.userDisplayName || 'Guest'
+            )} (<code>${escapeHtml(entry.cardSerial || '')}</code>)</span>
+            <div class="file-meta">${escapeHtml(entry.detail)}</div>
+          </div>
+          <div style="text-align: right;">
+            <span class="safe-badge" style="background: #f1f5f9; color: #334155;">${escapeHtml(
+              entry.deviceOs || 'Web'
+            )} · ${escapeHtml(entry.browser || '')}</span>
+            <div class="file-meta" style="margin-top: 0.25rem;">
+              IP ${escapeHtml(entry.ip)} · ${new Date(entry.createdAt).toLocaleTimeString()}
+            </div>
+          </div>
+        </div>
+      `
+        )
+        .join('');
+    }
+  }
+}
+
 function connectLiveEvents() {
   const es = new EventSource('/api/events/stream');
   es.onopen = () => {
@@ -929,6 +1157,9 @@ function connectLiveEvents() {
         await fetchPendingClaims();
         renderCardHeader();
         renderPlansAndPayments();
+        if (state.activeView === 'view-admin') {
+          loadAdminConsole();
+        }
 
         if (data.payment.status === 'APPROVED') {
           showBanner(
@@ -940,6 +1171,9 @@ function connectLiveEvents() {
         }
       } else if (data.type === 'FILES_UPDATED') {
         await loadSession();
+        if (state.activeView === 'view-admin') {
+          loadAdminConsole();
+        }
       }
     } catch {
       // Ignore heartbeat
@@ -1685,6 +1919,89 @@ window.addEventListener('DOMContentLoaded', async () => {
   on(p2pFileInput, 'change', (e) => {
     if (e.target.files[0]) beamLocalP2PFile(e.target.files[0]);
     p2pFileInput.value = '';
+  });
+
+  // Founder Admin Console Controls
+  on('btnUnlockAdminConsole', 'click', () => {
+    const val = document.getElementById('adminConsolePinInput')?.value?.trim() || '';
+    if (!val) {
+      showBanner('Please enter your 4-digit Founder Admin PIN.', true);
+      return;
+    }
+    localStorage.setItem('cardng_admin_pin', val);
+    loadAdminConsole();
+    fetchPendingClaims();
+  });
+
+  on('adminConsolePinInput', 'keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      document.getElementById('btnUnlockAdminConsole')?.click();
+    }
+  });
+
+  on('btnRefreshAdminDashboard', 'click', () => {
+    loadAdminConsole();
+    showBanner('Founder Admin telemetry refreshed.');
+  });
+
+  on('btnLockAdminSession', 'click', () => {
+    localStorage.removeItem('cardng_admin_pin');
+    const pinEl = document.getElementById('adminConsolePinInput');
+    if (pinEl) pinEl.value = '';
+    loadAdminConsole();
+    fetchPendingClaims();
+    showBanner('Founder Admin Console locked.');
+  });
+
+  on('admUsersDirectoryList', 'change', async (e) => {
+    const sel = e.target.closest('select[data-admin-user-plan]');
+    if (!sel) return;
+    const targetUserId = sel.dataset.adminUserPlan;
+    const planId = sel.value;
+    const savedPin = localStorage.getItem('cardng_admin_pin') || '';
+    const res = await fetch(`/api/admin/users/${encodeURIComponent(targetUserId)}/plan`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(savedPin ? { 'x-admin-pin': savedPin } : {})
+      },
+      body: JSON.stringify({ planId, adminPin: savedPin })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      showBanner(data.error || 'Could not update user plan', true);
+      loadAdminConsole();
+      return;
+    }
+    if (state.user && state.user.id === targetUserId && data.user) {
+      state.user = data.user;
+      renderCardHeader();
+      renderPlansAndPayments();
+    }
+    loadAdminConsole();
+    showBanner(`Updated card ${data.user.cardSerial} to ${data.user.planName}.`);
+  });
+
+  on('admAllPaymentsList', 'click', async (e) => {
+    const btn = e.target.closest('button[data-resolve-id]');
+    if (!btn) return;
+    const savedPin = localStorage.getItem('cardng_admin_pin') || '';
+    const res = await fetch(`/api/payments/${btn.dataset.resolveId}/resolve`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(savedPin ? { 'x-admin-pin': savedPin } : {})
+      },
+      body: JSON.stringify({ action: btn.dataset.resolveAction, adminPin: savedPin })
+    });
+    if (res.ok) {
+      loadAdminConsole();
+      fetchPendingClaims();
+    } else if (res.status === 403) {
+      localStorage.removeItem('cardng_admin_pin');
+      loadAdminConsole();
+    }
   });
 
   // 2. Now load session data and connect live SSE stream
