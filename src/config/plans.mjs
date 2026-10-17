@@ -1,3 +1,30 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+// Zero-dependency .env loader so local and VPS deployments pick up .env automatically
+try {
+  const __dirname = path.dirname(fileURLToPath(import.meta.url));
+  const envPath = path.resolve(__dirname, '../../.env');
+  if (fs.existsSync(envPath)) {
+    const lines = fs.readFileSync(envPath, 'utf-8').split(/\r?\n/);
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const eqIdx = trimmed.indexOf('=');
+      if (eqIdx > 0) {
+        const key = trimmed.slice(0, eqIdx).trim();
+        const val = trimmed.slice(eqIdx + 1).trim().replace(/^['"]|['"]$/g, '');
+        if (process.env[key] === undefined) {
+          process.env[key] = val;
+        }
+      }
+    }
+  }
+} catch {
+  // Ignore .env read errors
+}
+
 const GB = 1024 * 1024 * 1024;
 
 export const STORAGE_PLANS = {
@@ -75,13 +102,13 @@ export const APP_CONFIG = {
   merchant: {
     opay: {
       bankName: 'OPay Digital Services',
-      accountNumber: process.env.OPAY_ACCOUNT_NUMBER || '8012345678',
-      accountName: process.env.OPAY_ACCOUNT_NAME || 'CARDNG DIGITAL STORAGE'
+      accountNumber: process.env.OPAY_ACCOUNT_NUMBER || '8114587431',
+      accountName: process.env.OPAY_ACCOUNT_NAME || 'MAYORKUN SAMUEL AYANSHINA'
     },
     palmpay: {
       bankName: 'PalmPay',
-      accountNumber: process.env.PALMPAY_ACCOUNT_NUMBER || '8012345678',
-      accountName: process.env.PALMPAY_ACCOUNT_NAME || 'CARDNG DIGITAL STORAGE'
+      accountNumber: process.env.PALMPAY_ACCOUNT_NUMBER || '8114587431',
+      accountName: process.env.PALMPAY_ACCOUNT_NAME || 'MAYORKUN SAMUEL AYANSHINA'
     }
   },
   adminPin: process.env.ADMIN_PIN || '',
