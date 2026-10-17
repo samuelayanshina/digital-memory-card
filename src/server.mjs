@@ -40,6 +40,7 @@ import {
   broadcastToP2PRoom,
   notifyTelegramAdminOfPayment,
   resolvePaymentAndNotifyUser,
+  startTelegramBotPolling,
   sanitizeUserForClient
 } from './services/realtimeAndBot.mjs';
 import { handleWebDavRequest } from './services/webdavServer.mjs';
@@ -1315,11 +1316,15 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const server = createAppServer();
   server.listen(APP_CONFIG.port, APP_CONFIG.host, () => {
     const lanIp = getLocalLanIp();
+    startTelegramBotPolling();
     console.log(`\n==================================================================`);
     console.log(`💾 CardNG — Digital Memory Card Server Running!`);
     console.log(`   • Mac / PC Browser:   http://localhost:${APP_CONFIG.port}`);
     console.log(`   • iPhone / Android:   http://${lanIp}:${APP_CONFIG.port} (Same Wi-Fi)`);
     console.log(`   • Mac Finder Mount:   http://localhost:${APP_CONFIG.port}/webdav/<your-token>`);
+    if (APP_CONFIG.telegram.botToken) {
+      console.log(`   • Telegram Bot Live:  @cardng_mayorkun_bot (Chat ID: ${APP_CONFIG.telegram.adminChatId})`);
+    }
     console.log(`==================================================================\n`);
   });
 }

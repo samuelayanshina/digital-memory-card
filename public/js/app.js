@@ -839,7 +839,17 @@ function renderPlansAndPayments() {
 
 async function fetchPendingClaims() {
   try {
-    const res = await fetch('/api/payments/pending');
+    const savedPin = localStorage.getItem('cardng_admin_pin') || '';
+    const res = await fetch('/api/payments/pending', {
+      headers: savedPin ? { 'x-admin-pin': savedPin } : {}
+    });
+    if (res.status === 403) {
+      state.adminPinRequired = true;
+      state.pendingAdminClaims = [];
+      renderAdminPendingClaims();
+      return;
+    }
+    state.adminPinRequired = false;
     const data = await res.json();
     state.pendingAdminClaims = data.pending || [];
     renderAdminPendingClaims();
@@ -851,6 +861,25 @@ async function fetchPendingClaims() {
 function renderAdminPendingClaims() {
   const container = document.getElementById('adminPendingClaimsList');
   if (!container) return;
+  if (state.adminPinRequired) {
+    container.innerHTML = `
+      <div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
+        <input type="password" id="adminPinInputBox" class="input mono" placeholder="Enter 4-Digit Admin PIN" maxlength="8" style="max-width: 210px;" />
+        <button type="button" class="btn btn-outline btn-sm" id="btnUnlockAdminPin">Unlock Admin Claims</button>
+      </div>
+    `;
+    const btn = document.getElementById('btnUnlockAdminPin');
+    if (btn) {
+      btn.addEventListener('click', () => {
+        const val = document.getElementById('adminPinInputBox')?.value?.trim() || '';
+        if (val) {
+          localStorage.setItem('cardng_admin_pin', val);
+          fetchPendingClaims();
+        }
+      });
+    }
+    return;
+  }
   if (!state.pendingAdminClaims || state.pendingAdminClaims.length === 0) {
     container.innerHTML = `<p class="helper-caption">No pending transfer claims waiting for approval.</p>`;
     return;
@@ -864,11 +893,12 @@ function renderAdminPendingClaims() {
         <strong>${escapeHtml(c.reference)}: ₦${c.amountNaira} (${escapeHtml(c.quotaLabel)})</strong>
         <div class="file-meta">
           From <strong>${escapeHtml(c.senderName)}</strong> via ${escapeHtml(c.channel)}
+          ${c.sessionIdLast6 ? ` · Session #<code>${escapeHtml(c.sessionIdLast6)}</code>` : ''}
         </div>
       </div>
       <div style="display: flex; gap: 0.4rem;">
         <button class="btn btn-primary btn-xs" data-resolve-id="${c.id}" data-resolve-action="APPROVE">
-          Approve
+          Confirm
         </button>
         <button class="btn btn-danger btn-xs" data-resolve-id="${c.id}" data-resolve-action="REJECT">
           Reject
@@ -1525,11 +1555,20 @@ window.addEventListener('DOMContentLoaded', async () => {
   on('adminPendingClaimsList', 'click', async (e) => {
     const btn = e.target.closest('button[data-resolve-id]');
     if (!btn) return;
-    await fetch(`/api/payments/${btn.dataset.resolveId}/resolve`, {
+    const savedPin = localStorage.getItem('cardng_admin_pin') || '';
+    const res = await fetch(`/api/payments/${btn.dataset.resolveId}/resolve`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: btn.dataset.resolveAction })
+      headers: {
+        'Content-Type': 'application/json',
+        ...(savedPin ? { 'x-admin-pin': savedPin } : {})
+      },
+      body: JSON.stringify({ action: btn.dataset.resolveAction, adminPin: savedPin })
     });
+    if (res.status === 403) {
+      localStorage.removeItem('cardng_admin_pin');
+      fetchPendingClaims();
+      showBanner('Enter your 4-digit Admin PIN (9934) to confirm or reject claims.', true);
+    }
   });
 
   // View Official Receipt Modal

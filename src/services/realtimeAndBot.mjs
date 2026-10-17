@@ -167,8 +167,12 @@ export async function notifyTelegramAdminOfPayment(payment) {
   }
 
   try {
+    const statusLine = payment.instantUnlocked
+      ? `⚡ *Status:* Instant 0-Sec Unlock Active (Session ID Verified)\n`
+      : `⏳ *Status:* Waiting for Approval\n`;
     const text =
       `🔔 *New CardNG Transfer Claim*\n\n` +
+      statusLine +
       `*Reference:* \`${payment.reference}\`\n` +
       `*Amount:* ₦${payment.amountNaira.toLocaleString()}\n` +
       `*Plan:* ${payment.planName} (${payment.quotaLabel})\n` +
@@ -182,18 +186,18 @@ export async function notifyTelegramAdminOfPayment(payment) {
       inline_keyboard: [
         [
           {
-            text: `✅ Approve ₦${payment.amountNaira} (${payment.reference})`,
+            text: `✅ Confirm ₦${payment.amountNaira} (${payment.reference})`,
             callback_data: `APPROVE:${payment.id}`
           },
           {
-            text: `❌ Reject`,
+            text: `❌ Reject / Revoke`,
             callback_data: `REJECT:${payment.id}`
           }
         ]
       ]
     };
 
-    await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+    const res = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -203,7 +207,8 @@ export async function notifyTelegramAdminOfPayment(payment) {
         reply_markup: replyMarkup
       })
     });
-    return { sentToTelegram: true, mode: 'telegram-live' };
+    const json = await res.json();
+    return { sentToTelegram: Boolean(json.ok), mode: 'telegram-live' };
   } catch (err) {
     console.warn('[TelegramBot] Could not reach Telegram API:', err.message);
     return { sentToTelegram: false, mode: 'local-simulator' };
@@ -221,6 +226,100 @@ export function resolvePaymentAndNotifyUser(paymentId, action = 'APPROVE') {
     });
   }
   return { payment: updatedPayment, user };
+}
+
+// Background Long-Polling Worker for @cardng_mayorkun_bot (Works on both localhost and cloud VPS!)
+let telegramPollActive = false;
+let telegramLastUpdateId = 0;
+
+export function startTelegramBotPolling() {
+  const { botToken, adminChatId } = APP_CONFIG.telegram;
+  if (!botToken || telegramPollActive) return;
+  telegramPollActive = true;
+
+  async function pollLoop() {
+    while (telegramPollActive) {
+      try {
+        const res = await fetch(
+          `https://api.telegram.org/bot${botToken}/getUpdates?offset=${telegramLastUpdateId + 1}&timeout=15`
+        );
+        const data = await res.json();
+        if (data.ok && Array.isArray(data.result)) {
+          for (const update of data.result) {
+            telegramLastUpdateId = Math.max(telegramLastUpdateId, update.update_id);
+
+            // 1. Handle 1-Tap Inline Button Clicks ([✅ Confirm] / [❌ Reject / Revoke])
+            if (update.callback_query) {
+              const cb = update.callback_query;
+              const [rawAction, paymentId] = String(cb.data || '').split(':');
+              const action = rawAction === 'REJECT' ? 'REJECT' : 'APPROVE';
+              if (paymentId) {
+                try {
+                  const { payment } = resolvePaymentAndNotifyUser(paymentId, action);
+                  const toastText =
+                    action === 'APPROVE'
+                      ? `✅ Confirmed ${payment.reference} (${payment.receiptNumber})`
+                      : `❌ Rejected & Revoked ${payment.reference}`;
+                  await fetch(`https://api.telegram.org/bot${botToken}/answerCallbackQuery`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      callback_query_id: cb.id,
+                      text: toastText
+                    })
+                  });
+                  if (cb.message) {
+                    const statusBadge =
+                      action === 'APPROVE'
+                        ? `✅ *APPROVED* — Receipt: \`${payment.receiptNumber}\``
+                        : `❌ *REJECTED & QUOTA REVOKED*`;
+                    await fetch(`https://api.telegram.org/bot${botToken}/editMessageText`, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({
+                        chat_id: cb.message.chat.id,
+                        message_id: cb.message.message_id,
+                        text: `${cb.message.text}\n\n${statusBadge}`,
+                        parse_mode: 'Markdown'
+                      })
+                    });
+                  }
+                } catch {
+                  // Ignore if already resolved
+                }
+              }
+            }
+
+            // 2. Handle Forwarded OPay/PalmPay Credit Alert Messages sent to the Bot!
+            if (update.message && update.message.text) {
+              const msgText = String(update.message.text).trim();
+              const chatId = String(update.message.chat.id);
+              if (!adminChatId || chatId === String(adminChatId)) {
+                const matched = db.findMatchingPendingPaymentForAlert({ rawText: msgText });
+                if (matched) {
+                  const { payment } = resolvePaymentAndNotifyUser(matched.id, 'APPROVE');
+                  await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      chat_id: chatId,
+                      text: `✅ *Auto-Matched Credit Alert!*\nApproved \`${payment.reference}\` (₦${payment.amountNaira}) for *${payment.senderName}*.\nOfficial Receipt: \`${payment.receiptNumber}\``,
+                      parse_mode: 'Markdown'
+                    })
+                  });
+                }
+              }
+            }
+          }
+        }
+      } catch {
+        // Wait 5s on transient network error before retrying
+        await new Promise((r) => setTimeout(r, 5000));
+      }
+    }
+  }
+
+  pollLoop();
 }
 
 export function sanitizeUserForClient(user) {
