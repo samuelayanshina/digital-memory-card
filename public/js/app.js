@@ -55,6 +55,19 @@ async function computeFileSha256(file) {
   return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+async function computeFileSliceSha256(file, offset = 0, length = 64) {
+  const safeOffset = Math.max(0, Math.min(offset, Math.max(0, file.size - 1)));
+  const safeEnd = Math.min(file.size, safeOffset + length);
+  const sliceBuf = await file.slice(safeOffset, safeEnd).arrayBuffer();
+  const hashBuffer = await crypto.subtle.digest('SHA-256', sliceBuf);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return {
+    offset: safeOffset,
+    length: safeEnd - safeOffset,
+    hash: hashArray.map((b) => b.toString(16).padStart(2, '0')).join('')
+  };
+}
+
 function isEditableTextFile(file) {
   const mime = file.mimeType || '';
   const name = (file.name || '').toLowerCase();
@@ -202,7 +215,14 @@ function renderCardHeader() {
     badge: 'FREE STARTER',
     quotaLabel: formatBytes(user.quotaBytes)
   };
-  document.getElementById('cardPlanBadge').textContent = plan.badge || user.planName.toUpperCase();
+  const qs = user.quotaStatus || {};
+  let badgeText = plan.badge || user.planName.toUpperCase();
+  if (qs.isReadOnlyGraceMode) {
+    badgeText = 'READ-ONLY GRACE MODE';
+  } else if (qs.daysRemaining && user.planId !== 'free') {
+    badgeText = `${badgeText} • ${qs.daysRemaining}D LEFT`;
+  }
+  document.getElementById('cardPlanBadge').textContent = badgeText;
   document.getElementById('cardCapacityTitle').textContent =
     plan.quotaLabel || formatBytes(user.quotaBytes);
   document.getElementById('cardSerialText').textContent = user.cardSerial;
@@ -446,6 +466,7 @@ async function handleFilesSelected(fileList) {
       progressBar.style.width = '15%';
 
       const sha256 = await computeFileSha256(file);
+      const sliceProof = await computeFileSliceSha256(file, 0, 64);
 
       const preRes = await fetch('/api/files/preflight', {
         method: 'POST',
@@ -456,7 +477,8 @@ async function handleFilesSelected(fileList) {
           name: file.name,
           mimeType: file.type || 'application/octet-stream',
           folder,
-          isVaultLocked
+          isVaultLocked,
+          sliceProof
         })
       });
 
@@ -1455,11 +1477,13 @@ window.addEventListener('DOMContentLoaded', async () => {
     const planId = document.getElementById('paySelectedPlanId').value;
     const channel = document.getElementById('payChannelSelect').value;
     const senderName = document.getElementById('paySenderNameInput').value;
+    const sessionEl = document.getElementById('paySessionLast6Input');
+    const sessionIdLast6 = sessionEl ? sessionEl.value : '';
 
     const res = await fetch('/api/payments/claim', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ planId, channel, senderName })
+      body: JSON.stringify({ planId, channel, senderName, sessionIdLast6 })
     });
     const data = await res.json();
     if (!res.ok) {
@@ -1605,4 +1629,14 @@ window.addEventListener('DOMContentLoaded', async () => {
   // 2. Now load session data and connect live SSE stream
   await loadSession();
   connectLiveEvents();
+
+  // 3. Auto-open Claim Shared Code modal if opened via a /s/CARD-XXXX viral link (?claim=CARD-XXXX)
+  const urlParams = new URLSearchParams(window.location.search);
+  const incomingClaimCode = urlParams.get('claim');
+  if (incomingClaimCode && claimShareModal) {
+    const codeInput = document.getElementById('claimShareCodeInput');
+    if (codeInput) codeInput.value = incomingClaimCode.toUpperCase();
+    claimShareModal.showModal();
+    window.history.replaceState({}, document.title, '/');
+  }
 });

@@ -1,11 +1,54 @@
+import { BroadcastChannel } from 'node:worker_threads';
 import { APP_CONFIG } from '../config/plans.mjs';
 import { db } from '../db/database.mjs';
 
 // Map of userId -> Set of SSE response objects
 const userSseClients = new Map();
 
-// Map of roomCode -> Set of SSE response objects for Local P2P Zero-Data Transfer
+// Map of roomCode -> Map of peerId -> { peerId, deviceName, res }
 const p2pRooms = new Map();
+
+// Cross-Worker Cluster Bus (allows SSE & P2P events across multi-core Node.js workers)
+const clusterChannel = new BroadcastChannel('cardng_cluster_sse');
+clusterChannel.unref();
+
+function deliverLocalUserSse(userId, payload) {
+  const clients = userSseClients.get(userId);
+  if (!clients) return;
+  const serialized = `data: ${JSON.stringify(payload)}\n\n`;
+  for (const res of clients) {
+    try {
+      res.write(serialized);
+    } catch {
+      clients.delete(res);
+    }
+  }
+}
+
+function deliverLocalP2P(roomCode, payload, excludePeerId = null) {
+  const cleanRoom = String(roomCode).trim().toUpperCase();
+  const roomPeers = p2pRooms.get(cleanRoom);
+  if (!roomPeers) return;
+  const data = `data: ${JSON.stringify(payload)}\n\n`;
+  for (const [id, peer] of roomPeers.entries()) {
+    if (excludePeerId && id === excludePeerId) continue;
+    try {
+      peer.res.write(data);
+    } catch {
+      roomPeers.delete(id);
+    }
+  }
+}
+
+clusterChannel.onmessage = (event) => {
+  const msg = event.data;
+  if (!msg) return;
+  if (msg.channelType === 'USER_SSE') {
+    deliverLocalUserSse(msg.userId, msg.payload);
+  } else if (msg.channelType === 'P2P_ROOM') {
+    deliverLocalP2P(msg.roomCode, msg.payload, msg.excludePeerId);
+  }
+};
 
 export function subscribeUserEvents(userId, res) {
   res.writeHead(200, {
@@ -41,15 +84,11 @@ export function subscribeUserEvents(userId, res) {
 }
 
 export function pushToUser(userId, payload) {
-  const clients = userSseClients.get(userId);
-  if (!clients) return;
-  const serialized = `data: ${JSON.stringify(payload)}\n\n`;
-  for (const res of clients) {
-    try {
-      res.write(serialized);
-    } catch {
-      clients.delete(res);
-    }
+  deliverLocalUserSse(userId, payload);
+  try {
+    clusterChannel.postMessage({ channelType: 'USER_SSE', userId, payload });
+  } catch {
+    // Ignore broadcast serialization errors
   }
 }
 
@@ -100,25 +139,25 @@ export function joinP2PRoom(roomCode, peerId, deviceName, res) {
 }
 
 export function broadcastToP2PRoom(roomCode, payload, excludePeerId = null) {
-  const cleanRoom = String(roomCode).trim().toUpperCase();
-  const roomPeers = p2pRooms.get(cleanRoom);
-  if (!roomPeers) return;
-  const data = `data: ${JSON.stringify(payload)}\n\n`;
-  for (const [id, peer] of roomPeers.entries()) {
-    if (excludePeerId && id === excludePeerId) continue;
-    try {
-      peer.res.write(data);
-    } catch {
-      roomPeers.delete(id);
-    }
+  deliverLocalP2P(roomCode, payload, excludePeerId);
+  try {
+    clusterChannel.postMessage({
+      channelType: 'P2P_ROOM',
+      roomCode,
+      payload,
+      excludePeerId
+    });
+  } catch {
+    // Ignore broadcast serialization errors
   }
 }
 
 export async function notifyTelegramAdminOfPayment(payment) {
+  const sessionTag = payment.sessionIdLast6 ? ` | Session/Ref Tail: #${payment.sessionIdLast6}` : '';
   console.log(
     `\n🔔 [TELEGRAM 1-TAP ALERT] New Transfer Claim: ${payment.reference}` +
       `\n   • Plan: ${payment.planName} (${payment.quotaLabel}) — ₦${payment.amountNaira}` +
-      `\n   • Channel: ${payment.channel} | Sender: ${payment.senderName} (${payment.userPhone})` +
+      `\n   • Channel: ${payment.channel} | Sender: ${payment.senderName} (${payment.userPhone})${sessionTag}` +
       `\n   • Card Serial: ${payment.cardSerial}\n`
   );
 
@@ -135,6 +174,7 @@ export async function notifyTelegramAdminOfPayment(payment) {
       `*Plan:* ${payment.planName} (${payment.quotaLabel})\n` +
       `*Channel:* ${payment.channel}\n` +
       `*Sender:* ${payment.senderName}\n` +
+      (payment.sessionIdLast6 ? `*Receipt Session Tail:* \`${payment.sessionIdLast6}\`\n` : '') +
       `*Phone:* ${payment.userPhone}\n` +
       `*Card:* \`${payment.cardSerial}\``;
 
@@ -185,6 +225,7 @@ export function resolvePaymentAndNotifyUser(paymentId, action = 'APPROVE') {
 
 export function sanitizeUserForClient(user) {
   if (!user) return null;
+  const quotaStatus = db.getQuotaStatus(user.id);
   return {
     id: user.id,
     cardSerial: user.cardSerial,
@@ -195,6 +236,9 @@ export function sanitizeUserForClient(user) {
     planId: user.planId,
     planName: user.planName,
     quotaBytes: user.quotaBytes,
+    planActivatedAt: user.planActivatedAt || null,
+    planExpiresAt: user.planExpiresAt || null,
+    quotaStatus,
     usedBytes: user.usedBytes,
     savedDataBytes: user.savedDataBytes || 0,
     createdAt: user.createdAt

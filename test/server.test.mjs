@@ -663,4 +663,190 @@ test('13. Cryptographic PIN Recovery Key Reset (₦0 SMS) & Real Telegram 1-Tap 
   const tgData = await tgWebhookRes.json();
   assert.equal(tgData.payment.status, 'APPROVED');
   assert.equal(tgData.user.planId, 'pro');
+  assert.equal(tgData.user.quotaStatus.daysRemaining, 30);
+  assert.equal(tgData.user.quotaStatus.isReadOnlyGraceMode, false);
 });
+
+test('14. Resumable Chunked Upload Engine (Unstable 3G/4G Recovery) & Viral Share Link (/s/CARD-XXXX)', async () => {
+  const sRes = await dispatch('/api/session');
+  const token = (await sRes.json()).user.sessionToken;
+
+  const chunk1 = Buffer.from('PART_ONE_OF_LECTURE_VIDEO_OVER_UNSTABLE_MTN_3G_', 'utf-8');
+  const chunk2 = Buffer.from('PART_TWO_RESUMED_AFTER_NETWORK_DROP_WITHOUT_LOSING_PROGRESS', 'utf-8');
+  const fullBuffer = Buffer.concat([chunk1, chunk2]);
+  const expectedSha256 = crypto.createHash('sha256').update(fullBuffer).digest('hex');
+
+  // 1. Start resumable upload session
+  const initRes = await dispatch('/api/files/upload-session', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-card-token': token
+    },
+    body: {
+      name: 'UNILAG_Engineering_Lecture.mp4',
+      folder: 'Movies & Media',
+      mimeType: 'video/mp4',
+      totalSizeBytes: fullBuffer.length,
+      expectedSha256
+    }
+  });
+  assert.equal(initRes.status, 201);
+  const { session } = await initRes.json();
+  assert.ok(session.uploadId.startsWith('upl_'));
+
+  // 2. Upload Chunk 1 (offset 0)
+  const patch1 = await dispatch(`/api/files/upload-session/${session.uploadId}`, {
+    method: 'PATCH',
+    headers: {
+      'x-card-token': token,
+      'x-upload-offset': '0'
+    },
+    body: chunk1
+  });
+  assert.equal(patch1.status, 200);
+  const patch1Data = await patch1.json();
+  assert.equal(patch1Data.completed, false);
+  assert.equal(patch1Data.offsetBytes, chunk1.length);
+
+  // 3. Query session status after simulated 3G drop to find resume offset
+  const statusRes = await dispatch(`/api/files/upload-session/${session.uploadId}`, {
+    headers: { 'x-card-token': token }
+  });
+  assert.equal(statusRes.status, 200);
+  const statusData = await statusRes.json();
+  assert.equal(statusData.session.offsetBytes, chunk1.length);
+
+  // 4. Resume from exact byte offset with Chunk 2 -> Finalizes & mounts file!
+  const patch2 = await dispatch(`/api/files/upload-session/${session.uploadId}`, {
+    method: 'PATCH',
+    headers: {
+      'x-card-token': token,
+      'x-upload-offset': String(chunk1.length)
+    },
+    body: chunk2
+  });
+  assert.equal(patch2.status, 200);
+  const patch2Data = await patch2.json();
+  assert.equal(patch2Data.completed, true);
+  assert.equal(patch2Data.file.sha256, expectedSha256);
+  assert.equal(patch2Data.file.sizeBytes, fullBuffer.length);
+
+  // 5. Verify 1-Click Viral Share Link (/s/CARD-XXXX) redirects to /?claim=CARD-XXXX
+  const redirRes = await dispatch('/s/card-a1b2');
+  assert.equal(redirRes.status, 302);
+  assert.equal(redirRes.headers.get('location'), '/?claim=CARD-A1B2');
+});
+
+test('15. Anti-Hash-Spoofing Proof-of-Ownership & Private Vault Deduplication Isolation', async () => {
+  const userARes = await dispatch('/api/session');
+  const tokenA = (await userARes.json()).user.sessionToken;
+
+  const userBRes = await dispatch('/api/session');
+  const tokenB = (await userBRes.json()).user.sessionToken;
+
+  // 1. User A uploads a strictly private file into Private Vault
+  const vaultSecretBuf = Buffer.from(
+    `PRIVATE_VAULT_ONLY_DOCUMENT_${Date.now()}_${crypto.randomBytes(16).toString('hex')}`,
+    'utf-8'
+  );
+  const vaultSha = crypto.createHash('sha256').update(vaultSecretBuf).digest('hex');
+
+  const upVault = await dispatch('/api/files/upload', {
+    method: 'POST',
+    headers: {
+      'x-card-token': tokenA,
+      'x-file-name': 'Secret_Contract.pdf',
+      'x-file-type': 'application/pdf',
+      'x-file-folder': 'Private Vault',
+      'x-file-sha256': vaultSha,
+      'x-file-vault': 'true'
+    },
+    body: vaultSecretBuf
+  });
+  assert.equal(upVault.status, 201);
+
+  // 2. User B tries a "Confirmation-of-a-File" attack on User A's Private Vault hash -> Must NOT instantMatch!
+  const spoofVaultPre = await dispatch('/api/files/preflight', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-card-token': tokenB
+    },
+    body: {
+      sha256: vaultSha,
+      sizeBytes: vaultSecretBuf.length,
+      name: 'Stolen_Contract.pdf',
+      folder: 'Documents'
+    }
+  });
+  assert.equal(spoofVaultPre.status, 200);
+  const spoofVaultData = await spoofVaultPre.json();
+  assert.equal(spoofVaultData.instantMatch, false);
+
+  // 3. User A uploads a public file; User B sends a forged sliceProof -> Blocked (403)
+  const publicBuf = Buffer.from(
+    `PUBLIC_CAMPUS_HANDOUT_${Date.now()}_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789`,
+    'utf-8'
+  );
+  const publicSha = crypto.createHash('sha256').update(publicBuf).digest('hex');
+  await dispatch('/api/files/upload', {
+    method: 'POST',
+    headers: {
+      'x-card-token': tokenA,
+      'x-file-name': 'Handout.pdf',
+      'x-file-type': 'application/pdf',
+      'x-file-folder': 'Documents',
+      'x-file-sha256': publicSha
+    },
+    body: publicBuf
+  });
+
+  const forgedProofRes = await dispatch('/api/files/preflight', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-card-token': tokenB
+    },
+    body: {
+      sha256: publicSha,
+      sizeBytes: publicBuf.length,
+      name: 'Handout.pdf',
+      folder: 'Documents',
+      sliceProof: {
+        offset: 0,
+        length: 64,
+        hash: '0000000000000000000000000000000000000000000000000000000000000000'
+      }
+    }
+  });
+  assert.equal(forgedProofRes.status, 403);
+
+  // 4. User B sends valid cryptographic sliceProof -> Instant Zero-Data Match succeeds (200)
+  const validSliceHash = crypto
+    .createHash('sha256')
+    .update(publicBuf.subarray(0, 64))
+    .digest('hex');
+  const validProofRes = await dispatch('/api/files/preflight', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-card-token': tokenB
+    },
+    body: {
+      sha256: publicSha,
+      sizeBytes: publicBuf.length,
+      name: 'Handout.pdf',
+      folder: 'Documents',
+      sliceProof: {
+        offset: 0,
+        length: 64,
+        hash: validSliceHash
+      }
+    }
+  });
+  assert.equal(validProofRes.status, 200);
+  const validProofData = await validProofRes.json();
+  assert.equal(validProofData.instantMatch, true);
+});
+

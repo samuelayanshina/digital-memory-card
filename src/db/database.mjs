@@ -5,16 +5,18 @@ import { STORAGE_PLANS, APP_CONFIG } from '../config/plans.mjs';
 
 const DATA_DIR = path.resolve(APP_CONFIG.storageRoot, 'db');
 const DB_FILE = path.join(DATA_DIR, 'cardng_state.json');
+const DB_BAK_FILE = path.join(DATA_DIR, 'cardng_state.json.bak');
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
 const defaultState = {
-  users: {},       // id -> User
-  blobs: {},       // sha256 -> { sha256, sizeBytes, mimeType, refCount, createdAt }
-  files: {},       // fileId -> FileRecord
-  payments: {},    // paymentId -> PaymentRecord
-  shares: {},      // shareCode -> ShareRecord
-  auditLogs: {},   // userId -> Array<AuditEvent>
+  users: {},          // id -> User
+  blobs: {},          // sha256 -> { sha256, sizeBytes, mimeType, refCount, tier, accessCount, lastAccessedAt, createdAt }
+  files: {},          // fileId -> FileRecord
+  payments: {},       // paymentId -> PaymentRecord
+  shares: {},         // shareCode -> ShareRecord
+  uploadSessions: {}, // uploadId -> ResumableUploadSession
+  auditLogs: {},      // userId -> Array<AuditEvent>
   stats: {
     totalPhysicalBytes: 0,
     totalVirtualBytes: 0,
@@ -26,35 +28,55 @@ const defaultState = {
 let state = structuredClone(defaultState);
 
 function loadDatabase() {
-  try {
-    if (fs.existsSync(DB_FILE)) {
-      const raw = fs.readFileSync(DB_FILE, 'utf-8');
-      const parsed = JSON.parse(raw);
-      state = {
-        ...structuredClone(defaultState),
-        ...parsed,
-        stats: { ...defaultState.stats, ...(parsed.stats || {}) }
-      };
+  const candidates = [DB_FILE, DB_BAK_FILE];
+  for (const candidate of candidates) {
+    try {
+      if (fs.existsSync(candidate)) {
+        const raw = fs.readFileSync(candidate, 'utf-8');
+        const parsed = JSON.parse(raw);
+        state = {
+          ...structuredClone(defaultState),
+          ...parsed,
+          stats: { ...defaultState.stats, ...(parsed.stats || {}) }
+        };
+        return;
+      }
+    } catch (err) {
+      console.error(`[DB] Failed to load ${path.basename(candidate)}, trying fallback:`, err.message);
     }
-  } catch (err) {
-    console.error('[DB] Failed to load existing state, initializing clean DB:', err.message);
   }
 }
 
-let saveQueued = false;
-function persistDatabase() {
-  if (saveQueued) return;
-  saveQueued = true;
-  setImmediate(() => {
-    saveQueued = false;
-    try {
-      const tmpFile = `${DB_FILE}.tmp`;
-      fs.writeFileSync(tmpFile, JSON.stringify(state, null, 2), 'utf-8');
-      fs.renameSync(tmpFile, DB_FILE);
-    } catch (err) {
-      console.error('[DB] Atomic write error:', err.message);
+// Non-blocking async persistence queue with rotating .bak snapshot
+let savePending = false;
+let isWriting = false;
+
+async function flushDatabaseAsync() {
+  if (isWriting || !savePending) return;
+  isWriting = true;
+  savePending = false;
+
+  try {
+    const tmpFile = `${DB_FILE}.tmp`;
+    const payload = JSON.stringify(state, null, 2);
+    await fs.promises.writeFile(tmpFile, payload, 'utf-8');
+    if (fs.existsSync(DB_FILE)) {
+      await fs.promises.copyFile(DB_FILE, DB_BAK_FILE).catch(() => {});
     }
-  });
+    await fs.promises.rename(tmpFile, DB_FILE);
+  } catch (err) {
+    console.error('[DB] Async atomic write error:', err.message);
+  } finally {
+    isWriting = false;
+    if (savePending) {
+      setImmediate(flushDatabaseAsync);
+    }
+  }
+}
+
+function persistDatabase() {
+  savePending = true;
+  setImmediate(flushDatabaseAsync);
 }
 
 loadDatabase();
@@ -93,10 +115,13 @@ export const db = {
       phone: null,
       displayName: 'Guest Cardholder',
       pinHash: null,
+      recoveryKeyHash: null,
       isLockedToPhone: false,
       planId: plan.id,
       planName: plan.name,
       quotaBytes: plan.quotaBytes,
+      planActivatedAt: null,
+      planExpiresAt: null,
       usedBytes: 0,
       savedDataBytes: 0,
       createdAt: new Date().toISOString(),
@@ -131,6 +156,68 @@ export const db = {
     return cleaned;
   },
 
+  // 30-Day Sachet Subscription Lifecycle & Trust-Preserving Read-Only Grace Mode
+  getQuotaStatus(userId) {
+    const user = state.users[userId];
+    if (!user) {
+      return {
+        isPlanExpired: false,
+        isReadOnlyGraceMode: false,
+        daysRemaining: null,
+        effectiveQuotaBytes: 0,
+        planExpiresAt: null
+      };
+    }
+
+    if (!user.planExpiresAt || user.planId === 'free') {
+      return {
+        isPlanExpired: false,
+        isReadOnlyGraceMode: false,
+        daysRemaining: null,
+        effectiveQuotaBytes: user.quotaBytes,
+        planExpiresAt: null
+      };
+    }
+
+    const expiresMs = new Date(user.planExpiresAt).getTime();
+    const diffMs = expiresMs - Date.now();
+    const isPlanExpired = diffMs <= 0;
+    const daysRemaining = isPlanExpired ? 0 : Math.ceil(diffMs / (24 * 60 * 60 * 1000));
+    const freeQuota = STORAGE_PLANS.free.quotaBytes;
+    const effectiveQuotaBytes = isPlanExpired ? freeQuota : user.quotaBytes;
+    const isReadOnlyGraceMode = isPlanExpired && user.usedBytes >= freeQuota;
+
+    return {
+      isPlanExpired,
+      isReadOnlyGraceMode,
+      daysRemaining,
+      effectiveQuotaBytes,
+      planExpiresAt: user.planExpiresAt
+    };
+  },
+
+  assertCanUpload(userId, incomingBytes = 0) {
+    const user = state.users[userId];
+    if (!user) throw new Error('User not found');
+    const qs = db.getQuotaStatus(userId);
+    const numBytes = Number(incomingBytes || 0);
+
+    if (qs.isPlanExpired) {
+      if (user.usedBytes + numBytes > STORAGE_PLANS.free.quotaBytes) {
+        throw new Error(
+          'QUOTA_EXCEEDED: Your 30-day Sachet Plan has expired (Read-Only Grace Mode). All your existing files are 100% safe and streamable — top up ₦250 or ₦500 to upload new files!'
+        );
+      }
+    }
+
+    if (user.usedBytes + numBytes > qs.effectiveQuotaBytes) {
+      throw new Error(
+        'QUOTA_EXCEEDED: Your Digital Memory Card is full. Upgrade for ₦250 or ₦500 to add space!'
+      );
+    }
+    return true;
+  },
+
   lockUserToPhone(userId, { phone, pin, displayName }) {
     const user = state.users[userId];
     if (!user) throw new Error('User not found');
@@ -145,7 +232,9 @@ export const db = {
 
     const existingOwner = db.getUserByPhone(normalizedPhone);
     if (existingOwner && existingOwner.id !== userId) {
-      throw new Error('This phone number is already linked to another Memory Card. Use "Switch / Restore Card" to log in.');
+      throw new Error(
+        'This phone number is already linked to another Memory Card. Use "Switch / Restore Card" to log in.'
+      );
     }
 
     const recA = crypto.randomBytes(2).toString('hex').toUpperCase();
@@ -158,7 +247,6 @@ export const db = {
     user.displayName = displayName?.trim() || `Card ${normalizedPhone.slice(-4)}`;
     user.isLockedToPhone = true;
     user.updatedAt = new Date().toISOString();
-
     persistDatabase();
     return { user, recoveryKey };
   },
@@ -172,6 +260,7 @@ export const db = {
     if (!/^\d{4}$/.test(String(newPin))) {
       throw new Error('New PIN must be exactly 4 digits');
     }
+
     const cleanKey = String(recoveryKey || '').trim().toUpperCase();
     const candidateHash = hashPin(cleanKey, normalizedPhone);
     const valid = crypto.timingSafeEqual(
@@ -224,10 +313,34 @@ export const db = {
     return state.blobs[sha256] || null;
   },
 
+  // Prevents "Confirmation-of-a-File" attacks on Private Vault blobs
+  canDeduplicateBlob(sha256, requestingUserId) {
+    const cleanHash = String(sha256 || '').toLowerCase();
+    const blob = state.blobs[cleanHash];
+    if (!blob) return false;
+
+    const matchingFiles = Object.values(state.files).filter((f) => f.sha256 === cleanHash);
+    if (matchingFiles.length === 0) return true;
+
+    // Allow deduplication if the requesting user already owns a copy OR at least one copy is non-vault
+    return matchingFiles.some((f) => f.userId === requestingUserId || !f.isVaultLocked);
+  },
+
+  touchBlobAccess(sha256) {
+    const blob = state.blobs[String(sha256 || '').toLowerCase()];
+    if (!blob) return;
+    blob.accessCount = (blob.accessCount || 0) + 1;
+    blob.lastAccessedAt = new Date().toISOString();
+    blob.tier = 'HOT_LOCAL_NVME';
+    persistDatabase();
+  },
+
   registerOrIncrementBlob({ sha256, sizeBytes, mimeType }) {
     const existing = state.blobs[sha256];
     if (existing) {
       existing.refCount += 1;
+      existing.accessCount = (existing.accessCount || 1) + 1;
+      existing.lastAccessedAt = new Date().toISOString();
       state.stats.totalVirtualBytes += sizeBytes;
       state.stats.totalDeduplicatedBytesSaved += sizeBytes;
       state.stats.totalInstantUploadsCount += 1;
@@ -235,18 +348,79 @@ export const db = {
       return { blob: existing, deduplicated: true };
     }
 
+    const now = new Date().toISOString();
     const blob = {
       sha256,
       sizeBytes,
       mimeType: mimeType || 'application/octet-stream',
       refCount: 1,
-      createdAt: new Date().toISOString()
+      tier: 'HOT_LOCAL_NVME',
+      accessCount: 1,
+      lastAccessedAt: now,
+      createdAt: now
     };
     state.blobs[sha256] = blob;
     state.stats.totalPhysicalBytes += sizeBytes;
     state.stats.totalVirtualBytes += sizeBytes;
     persistDatabase();
     return { blob, deduplicated: false };
+  },
+
+  // Resumable Chunked Uploads for Unstable 3G/4G Networks
+  createUploadSession({
+    userId,
+    name,
+    folder = 'All Files',
+    mimeType = 'application/octet-stream',
+    totalSizeBytes,
+    expectedSha256 = null,
+    isVaultLocked = false
+  }) {
+    db.assertCanUpload(userId, totalSizeBytes);
+    if (!state.uploadSessions) state.uploadSessions = {};
+
+    const uploadId = `upl_${crypto.randomBytes(8).toString('hex')}`;
+    const session = {
+      uploadId,
+      userId,
+      name: path.basename(name || 'Chunked_Upload.bin'),
+      folder,
+      mimeType,
+      totalSizeBytes: Number(totalSizeBytes || 0),
+      offsetBytes: 0,
+      expectedSha256: expectedSha256 ? String(expectedSha256).toLowerCase() : null,
+      isVaultLocked: Boolean(isVaultLocked),
+      status: 'IN_PROGRESS',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    state.uploadSessions[uploadId] = session;
+    persistDatabase();
+    return session;
+  },
+
+  getUploadSession(uploadId, userId) {
+    if (!state.uploadSessions) return null;
+    const s = state.uploadSessions[uploadId];
+    if (!s || (userId && s.userId !== userId)) return null;
+    return s;
+  },
+
+  updateUploadSessionOffset(uploadId, newOffsetBytes) {
+    if (!state.uploadSessions || !state.uploadSessions[uploadId]) return null;
+    const s = state.uploadSessions[uploadId];
+    s.offsetBytes = Number(newOffsetBytes);
+    s.updatedAt = new Date().toISOString();
+    persistDatabase();
+    return s;
+  },
+
+  completeUploadSession(uploadId) {
+    if (!state.uploadSessions || !state.uploadSessions[uploadId]) return null;
+    const s = state.uploadSessions[uploadId];
+    delete state.uploadSessions[uploadId];
+    persistDatabase();
+    return s;
   },
 
   createFileRecord({
@@ -264,7 +438,9 @@ export const db = {
     if (!user) throw new Error('User not found');
 
     const id = `fil_${crypto.randomBytes(8).toString('hex')}`;
-    const savedByThisOp = deduplicated ? Number(sizeBytes) : Math.max(0, Number(extraSavedDataBytes || 0));
+    const savedByThisOp = deduplicated
+      ? Number(sizeBytes)
+      : Math.max(0, Number(extraSavedDataBytes || 0));
     const record = {
       id,
       userId,
@@ -429,7 +605,7 @@ export const db = {
     };
     state.auditLogs[userId].unshift(entry);
     if (state.auditLogs[userId].length > 80) {
-      state.auditLogs[userId] = state.auditLogs[userId].slice(0, 80);
+      state.auditLogs[userId].slice(0, 80);
     }
     persistDatabase();
     return entry;
@@ -461,7 +637,10 @@ export const db = {
       blob.refCount = Math.max(0, blob.refCount - 1);
       if (blob.refCount === 0) {
         delete state.blobs[file.sha256];
-        state.stats.totalPhysicalBytes = Math.max(0, state.stats.totalPhysicalBytes - file.sizeBytes);
+        state.stats.totalPhysicalBytes = Math.max(
+          0,
+          state.stats.totalPhysicalBytes - file.sizeBytes
+        );
         shouldDeletePhysicalBlob = true;
       }
     }
@@ -470,7 +649,13 @@ export const db = {
     return { deletedFile: file, shouldDeletePhysicalBlob };
   },
 
-  createPaymentClaim({ userId, planId, channel = 'OPay', senderName = '' }) {
+  createPaymentClaim({
+    userId,
+    planId,
+    channel = 'OPay',
+    senderName = '',
+    sessionIdLast6 = ''
+  }) {
     const user = state.users[userId];
     if (!user) throw new Error('User not found');
     const plan = STORAGE_PLANS[planId];
@@ -479,6 +664,10 @@ export const db = {
     const id = `pay_${crypto.randomBytes(6).toString('hex')}`;
     const refNumber = Math.floor(1000 + Math.random() * 9000);
     const reference = `MC-${refNumber}`;
+    const cleanedSession6 = String(sessionIdLast6 || '')
+      .replace(/[^a-zA-Z0-9]/g, '')
+      .slice(-8)
+      .toUpperCase();
 
     const payment = {
       id,
@@ -492,6 +681,7 @@ export const db = {
       amountNaira: plan.priceNaira,
       channel,
       senderName: senderName.trim() || user.displayName,
+      sessionIdLast6: cleanedSession6 || null,
       status: 'PENDING',
       receiptNumber: null,
       createdAt: new Date().toISOString(),
@@ -512,14 +702,21 @@ export const db = {
     const plan = STORAGE_PLANS[payment.planId];
 
     if (action === 'APPROVE' && user && plan) {
+      const now = new Date();
+      const durationDays = Number(plan.durationDays || 30);
+      const expiresAt = new Date(now.getTime() + durationDays * 24 * 60 * 60 * 1000);
+
       payment.status = 'APPROVED';
-      payment.resolvedAt = new Date().toISOString();
+      payment.resolvedAt = now.toISOString();
       payment.receiptNumber = `NG-RCPT-${Date.now().toString().slice(-6)}`;
+      payment.planExpiresAt = expiresAt.toISOString();
 
       user.planId = plan.id;
       user.planName = plan.name;
       user.quotaBytes = plan.quotaBytes;
-      user.updatedAt = new Date().toISOString();
+      user.planActivatedAt = now.toISOString();
+      user.planExpiresAt = expiresAt.toISOString();
+      user.updatedAt = now.toISOString();
     } else {
       payment.status = 'REJECTED';
       payment.resolvedAt = new Date().toISOString();
@@ -555,8 +752,8 @@ export const db = {
     const oldSize = file.sizeBytes;
     const sizeDelta = Number(newSizeBytes) - oldSize;
 
-    if (user.usedBytes + sizeDelta > user.quotaBytes) {
-      throw new Error('QUOTA_EXCEEDED: Not enough space on your Memory Card to save changes');
+    if (sizeDelta > 0) {
+      db.assertCanUpload(userId, sizeDelta);
     }
 
     let shouldDeleteOldBlob = false;
@@ -618,20 +815,26 @@ export const db = {
     return share;
   },
 
+  getShareByCode(rawCode) {
+    if (!state.shares) return null;
+    const code = String(rawCode || '').trim().toUpperCase();
+    return state.shares[code] || null;
+  },
+
   claimShareCode(rawCode, targetUserId) {
     if (!state.shares) state.shares = {};
     const code = String(rawCode || '').trim().toUpperCase();
     const share = state.shares[code];
     if (!share) {
-      throw new Error('Invalid or expired Share Code. Check the code (e.g. CARD-A1B2) and try again.');
+      throw new Error(
+        'Invalid or expired Share Code. Check the code (e.g. CARD-A1B2) and try again.'
+      );
     }
 
     const user = state.users[targetUserId];
     if (!user) throw new Error('User not found');
 
-    if (user.usedBytes + share.sizeBytes > user.quotaBytes) {
-      throw new Error('QUOTA_EXCEEDED: Not enough free space on your Memory Card to claim this shared file.');
-    }
+    db.assertCanUpload(targetUserId, share.sizeBytes);
 
     db.registerOrIncrementBlob({
       sha256: share.sha256,

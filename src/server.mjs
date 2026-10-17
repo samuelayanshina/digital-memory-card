@@ -16,7 +16,10 @@ import {
 import {
   isValidSha256,
   hasPhysicalBlob,
+  computeBlobSliceHash,
   storeStreamAsBlob,
+  appendChunkToUploadSession,
+  finalizeUploadSessionAsBlob,
   fetchRemoteUrlAsBlob,
   storeBufferAsBlob,
   deletePhysicalBlob
@@ -363,22 +366,43 @@ export function createAppServer() {
       if (pathname === '/api/files/preflight' && req.method === 'POST') {
         const user = getOrProvisionUser(req, res, true);
         const body = await readJsonBody(req);
-        const { sha256, sizeBytes, name, mimeType, folder, isVaultLocked } = body;
+        const { sha256, sizeBytes, name, mimeType, folder, isVaultLocked, sliceProof } = body;
 
         if (!isValidSha256(sha256)) {
           return sendJson(res, 400, { error: 'Valid 64-char SHA-256 hash required' });
         }
 
         const numericSize = Number(sizeBytes || 0);
-        if (user.usedBytes + numericSize > user.quotaBytes) {
-          return sendJson(res, 507, {
-            error: 'QUOTA_EXCEEDED: Your Digital Memory Card is full. Upgrade for ₦250 or ₦500 to add space!'
-          });
+        try {
+          db.assertCanUpload(user.id, numericSize);
+        } catch (quotaErr) {
+          return sendJson(res, 507, { error: quotaErr.message });
         }
 
-        // Check if physical blob already exists on our server!
-        if (hasPhysicalBlob(sha256, numericSize)) {
-          db.registerOrIncrementBlob({ sha256: sha256.toLowerCase(), sizeBytes: numericSize, mimeType });
+        // Check if physical blob already exists AND is allowed to be deduplicated (never leak Private Vault blobs!)
+        const canDeduplicate =
+          hasPhysicalBlob(sha256, numericSize) && db.canDeduplicateBlob(sha256, user.id);
+
+        if (canDeduplicate) {
+          // If client provided a Proof-of-Ownership slice hash, verify it matches the physical blob
+          if (sliceProof && typeof sliceProof === 'object' && sliceProof.hash) {
+            const expectedSliceHash = computeBlobSliceHash(
+              sha256,
+              Number(sliceProof.offset || 0),
+              Number(sliceProof.length || 64)
+            );
+            if (expectedSliceHash !== String(sliceProof.hash).toLowerCase()) {
+              return sendJson(res, 403, {
+                error: 'OWNERSHIP_PROOF_FAILED: Cryptographic file slice verification failed.'
+              });
+            }
+          }
+
+          db.registerOrIncrementBlob({
+            sha256: sha256.toLowerCase(),
+            sizeBytes: numericSize,
+            mimeType
+          });
           const fileRecord = db.createFileRecord({
             userId: user.id,
             name: name || 'Deduplicated_File',
@@ -397,6 +421,7 @@ export function createAppServer() {
             message: '⚡ Instant Zero-Data Match! File already in Cloud Vault — 0 MB data spent!',
             file: decorateFileWithStreamUrl(fileRecord, user.id),
             user: sanitizeUserForClient(updatedUser),
+            breakdown: db.getStorageBreakdown(user.id),
             stats: db.getStats()
           });
         }
@@ -417,13 +442,15 @@ export function createAppServer() {
         const isVaultLocked = req.headers['x-file-vault'] === 'true';
         const isGzipCompressed = req.headers['x-upload-encoding'] === 'gzip';
 
-        const remainingQuota = Math.max(0, user.quotaBytes - user.usedBytes);
-        if (remainingQuota <= 0) {
+        try {
+          db.assertCanUpload(user.id, 1);
+        } catch (quotaErr) {
           req.resume();
-          return sendJson(res, 507, {
-            error: 'Your Digital Memory Card is full! Tap Upgrade (from ₦250) to expand immediately.'
-          });
+          return sendJson(res, 507, { error: quotaErr.message });
         }
+
+        const qs = db.getQuotaStatus(user.id);
+        const remainingQuota = Math.max(0, qs.effectiveQuotaBytes - user.usedBytes);
 
         const { sha256, sizeBytes, compressionSavedBytes } = await storeStreamAsBlob(req, {
           maxBytes: remainingQuota,
@@ -460,6 +487,89 @@ export function createAppServer() {
         });
       }
 
+      // 7a. Resumable Chunked Upload Endpoints for Unstable 3G/4G Networks
+      if (pathname === '/api/files/upload-session' && req.method === 'POST') {
+        const user = getOrProvisionUser(req, res, true);
+        const body = await readJsonBody(req);
+        try {
+          const session = db.createUploadSession({
+            userId: user.id,
+            name: body.name,
+            folder: body.folder || 'All Files',
+            mimeType: body.mimeType || 'application/octet-stream',
+            totalSizeBytes: Number(body.totalSizeBytes || 0),
+            expectedSha256: body.expectedSha256 || null,
+            isVaultLocked: Boolean(body.isVaultLocked)
+          });
+          return sendJson(res, 201, { session });
+        } catch (err) {
+          return sendJson(res, err.message?.startsWith('QUOTA_EXCEEDED') ? 507 : 400, {
+            error: err.message
+          });
+        }
+      }
+
+      const uploadSessionMatch = pathname.match(/^\/api\/files\/upload-session\/([^/]+)$/);
+      if (uploadSessionMatch && req.method === 'GET') {
+        const user = getOrProvisionUser(req, res, false);
+        if (!user) return sendJson(res, 401, { error: 'Unauthorized' });
+        const session = db.getUploadSession(uploadSessionMatch[1], user.id);
+        if (!session) return sendJson(res, 404, { error: 'Upload session not found' });
+        return sendJson(res, 200, { session });
+      }
+
+      if (uploadSessionMatch && req.method === 'PATCH') {
+        const user = getOrProvisionUser(req, res, false);
+        if (!user) return sendJson(res, 401, { error: 'Unauthorized' });
+        const session = db.getUploadSession(uploadSessionMatch[1], user.id);
+        if (!session) return sendJson(res, 404, { error: 'Upload session not found' });
+
+        const expectedOffset = Number(req.headers['x-upload-offset'] || 0);
+        const { newOffsetBytes } = await appendChunkToUploadSession(session.uploadId, req, {
+          expectedOffset,
+          maxTotalBytes: session.totalSizeBytes
+        });
+
+        db.updateUploadSessionOffset(session.uploadId, newOffsetBytes);
+
+        if (newOffsetBytes >= session.totalSizeBytes) {
+          const { sha256, sizeBytes } = finalizeUploadSessionAsBlob(
+            session.uploadId,
+            session.expectedSha256
+          );
+          db.completeUploadSession(session.uploadId);
+          const { deduplicated } = db.registerOrIncrementBlob({
+            sha256,
+            sizeBytes,
+            mimeType: session.mimeType
+          });
+          const fileRecord = db.createFileRecord({
+            userId: user.id,
+            name: session.name,
+            folder: session.folder,
+            sha256,
+            sizeBytes,
+            mimeType: session.mimeType,
+            isVaultLocked: session.isVaultLocked,
+            deduplicated
+          });
+          const updatedUser = db.getUserById(user.id);
+          return sendJson(res, 200, {
+            completed: true,
+            offsetBytes: newOffsetBytes,
+            file: decorateFileWithStreamUrl(fileRecord, user.id),
+            user: sanitizeUserForClient(updatedUser),
+            breakdown: db.getStorageBreakdown(user.id)
+          });
+        }
+
+        return sendJson(res, 200, {
+          completed: false,
+          offsetBytes: newOffsetBytes,
+          totalSizeBytes: session.totalSizeBytes
+        });
+      }
+
       // 7b. POST /api/files/remote-fetch — Cloud Direct URL Fetch (0 MB Phone Data Used!)
       if (pathname === '/api/files/remote-fetch' && req.method === 'POST') {
         const user = getOrProvisionUser(req, res, true);
@@ -469,12 +579,14 @@ export function createAppServer() {
         const folder = String(body.folder || 'Movies & Media');
         const isVaultLocked = Boolean(body.isVaultLocked) || folder === 'Private Vault';
 
-        const remainingQuota = Math.max(0, user.quotaBytes - user.usedBytes);
-        if (remainingQuota <= 0) {
-          return sendJson(res, 507, {
-            error: 'QUOTA_EXCEEDED: Your Digital Memory Card is full.'
-          });
+        try {
+          db.assertCanUpload(user.id, 1);
+        } catch (quotaErr) {
+          return sendJson(res, 507, { error: quotaErr.message });
         }
+
+        const qs = db.getQuotaStatus(user.id);
+        const remainingQuota = Math.max(0, qs.effectiveQuotaBytes - user.usedBytes);
 
         const { sha256, sizeBytes, mimeType, inferredName } = await fetchRemoteUrlAsBlob(
           targetUrl,
@@ -762,6 +874,7 @@ export function createAppServer() {
           });
         }
 
+        db.touchBlobAccess(file.sha256);
         return streamFileBlob(req, res, file, { download });
       }
 
@@ -881,7 +994,8 @@ export function createAppServer() {
           userId: user.id,
           planId: body.planId,
           channel: body.channel || 'OPay',
-          senderName: body.senderName || ''
+          senderName: body.senderName || '',
+          sessionIdLast6: body.sessionIdLast6 || ''
         });
 
         db.appendAuditLog(user.id, {
@@ -904,10 +1018,14 @@ export function createAppServer() {
       if (resolveMatch && req.method === 'POST') {
         const paymentId = resolveMatch[1];
         const body = await readJsonBody(req);
-        if (APP_CONFIG.adminPin) {
+        const requiredAdminPin =
+          APP_CONFIG.adminPin || (process.env.NODE_ENV === 'production' ? '__REQUIRED__' : '');
+        if (requiredAdminPin) {
           const providedAdminPin = req.headers['x-admin-pin'] || body.adminPin || '';
-          if (String(providedAdminPin) !== String(APP_CONFIG.adminPin)) {
-            return sendJson(res, 403, { error: 'Admin PIN required to resolve payments in production.' });
+          if (!providedAdminPin || String(providedAdminPin) !== String(requiredAdminPin)) {
+            return sendJson(res, 403, {
+              error: 'Admin PIN required to resolve payments in production.'
+            });
           }
         }
         const action = body.action === 'REJECT' ? 'REJECT' : 'APPROVE';
@@ -959,6 +1077,15 @@ export function createAppServer() {
 
       // 14. GET /api/payments/pending — List Pending Claims for Admin / Telegram Simulator
       if (pathname === '/api/payments/pending' && req.method === 'GET') {
+        const requiredAdminPin =
+          APP_CONFIG.adminPin || (process.env.NODE_ENV === 'production' ? '__REQUIRED__' : '');
+        if (requiredAdminPin) {
+          const providedPin =
+            req.headers['x-admin-pin'] || urlObj.searchParams.get('adminPin') || '';
+          if (!providedPin || String(providedPin) !== String(requiredAdminPin)) {
+            return sendJson(res, 403, { error: 'Admin PIN required to view pending claims.' });
+          }
+        }
         return sendJson(res, 200, {
           pending: db.getPendingPayments()
         });
@@ -977,6 +1104,14 @@ export function createAppServer() {
         const body = await readJsonBody(req, 10 * 1024 * 1024); // Allow up to 10MB local P2P chunks
         broadcastToP2PRoom(body.roomCode, body, body.senderPeerId);
         return sendJson(res, 200, { relayed: true });
+      }
+
+      // 16. GET /s/:code — 1-Click Campus / WhatsApp Viral Share Link Redirect (0 MB Data Claim)
+      const shareLinkMatch = pathname.match(/^\/s\/([A-Za-z0-9-]+)$/);
+      if (shareLinkMatch && req.method === 'GET') {
+        const code = shareLinkMatch[1].toUpperCase();
+        res.writeHead(302, { Location: `/?claim=${encodeURIComponent(code)}` });
+        return res.end();
       }
 
       // Serve Static Frontend PWA Files
